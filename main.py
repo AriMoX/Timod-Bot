@@ -45,8 +45,31 @@ async def start_healthcheck_server():
     async def handle_ping(request):
         return web.Response(text="Timod Downloader Bot is running 24/7!", content_type="text/plain")
 
+    async def handle_version(request):
+        return web.json_response({"status": "running", "version": "v2.2-pin-dual", "timestamp": "2026-09-15"})
+
+    async def handle_test_pin(request):
+        pin_url = request.query.get("url", "https://pin.it/4RwSXGxJL")
+        from bot.services.pinterest import download_pinterest
+        from bot.utils.cleanup import safe_remove
+        try:
+            res = await download_pinterest(pin_url)
+            size = res.file_path.stat().st_size if res.file_path.exists() else 0
+            safe_remove(res.file_path)
+            return web.json_response({
+                "ok": True,
+                "media_type": res.media_type,
+                "title": res.title,
+                "uploader": res.uploader,
+                "size_bytes": size,
+            })
+        except Exception as err:
+            return web.json_response({"ok": False, "error": str(err)})
+
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
+    app.router.add_get("/version", handle_version)
+    app.router.add_get("/test-pin", handle_test_pin)
 
     runner = web.AppRunner(app)
     await runner.setup()

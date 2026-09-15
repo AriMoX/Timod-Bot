@@ -194,7 +194,38 @@ def _download_pinterest_sync(url: str) -> PinterestMedia:
                             height=images.get("orig", {}).get("height"),
                         )
 
-    # 2. Secondary Method: Attempt download using yt-dlp
+    # 2. Secondary Method: Pinterest Public oEmbed API (Guaranteed access, 0% datacenter blocks)
+    try:
+        oembed_url = f"https://www.pinterest.com/oembed.json?url={target_url}"
+        oe_req = urllib.request.Request(
+            oembed_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
+        with urllib.request.urlopen(oe_req, timeout=10) as oe_resp:
+            oe_data = json.loads(oe_resp.read().decode("utf-8"))
+            oe_thumb = oe_data.get("thumbnail_url")
+            oe_author = oe_data.get("author_name") or "Pinterest"
+            oe_title = (oe_data.get("title") or "").strip()
+            
+            p_id = pin_id or "photo"
+            if oe_thumb:
+                # Convert 236x/736x to originals for crystal clear quality
+                orig_thumb = re.sub(r"/\d+x/", "/originals/", oe_thumb)
+                out_img = DOWNLOADS_DIR / f"pin_{p_id}.jpg"
+                for cand_url in [orig_thumb, oe_thumb]:
+                    if _download_stream(cand_url, out_img):
+                        return PinterestMedia(
+                            media_type="photo",
+                            title=oe_title,
+                            uploader=oe_author,
+                            file_path=out_img,
+                            width=oe_data.get("width"),
+                            height=oe_data.get("height"),
+                        )
+    except Exception as oe_err:
+        logger.info("Pinterest oEmbed method failed: %s", oe_err)
+
+    # 3. Tertiary Method: Attempt download using yt-dlp
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     ydl_opts = {
         "format": "best[ext=mp4]/best",

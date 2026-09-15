@@ -427,7 +427,7 @@ async def handle_pinterest(message: Message):
             clean_title = clean_title[:797] + "..."
 
         uploader_str = f"\n👤 {media.uploader}" if media.uploader and media.uploader != "Pinterest" else ""
-        caption = f"📌 **{clean_title}**{uploader_str}\n\n🤖 دانلود شده توسط ربات"
+        caption = f"📌 {clean_title}{uploader_str}\n\n🤖 دانلود شده توسط ربات"
 
         if media.media_type == "video":
             await message.reply_video(
@@ -436,13 +436,11 @@ async def handle_pinterest(message: Message):
                 duration=media.duration,
                 width=media.width,
                 height=media.height,
-                parse_mode="Markdown",
             )
         else:
             await message.reply_photo(
                 photo=FSInputFile(media.file_path),
                 caption=caption,
-                parse_mode="Markdown",
             )
         await status_msg.delete()
 
