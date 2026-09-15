@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+downloads/
+manage_server.py
+desktop.ini
+*.log
+embed_page.html
+embed_head.txt
+recent_remote_logs.txt
+test_*.py
+
+*.db
+*.zip
+.hfignore
