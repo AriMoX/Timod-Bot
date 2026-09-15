@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "8668619344:AAEpRzx5lG9h5z91lQbQR8xNzg9sbzY6KZA"
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is not set in .env file!")
+    raise ValueError("BOT_TOKEN is not set!")
 
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
 
