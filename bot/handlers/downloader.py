@@ -11,6 +11,7 @@ from bot.services.youtube import download_youtube
 from bot.services.tiktok import download_tiktok
 from bot.services.pinterest import download_pinterest
 from bot.services.spotify import download_spotify
+from bot.services.cache import get_cached_audio, save_cached_audio
 from bot.utils.cleanup import safe_remove
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ INSTAGRAM_REGEX = re.compile(
 )
 # Regex to match Pinterest links (pin.it, pinterest.com/pin/...)
 PINTEREST_REGEX = re.compile(
-    r"(https?://(?:[a-zA-Z0-9_\.]+\.)?pinterest\.(?:com|it|co\.uk|fr|de|es)/pin/[0-9]+(?:\?[^\s]+)?|https?://pin\.it/[A-Za-z0-9_\-]+(?:\?[^\s]+)?)"
+    r"(https?://(?:[a-zA-Z0-9_\.]+\.)?pinterest\.[a-z\.]+/pin/[0-9]+[^\s]*|https?://pin\.it/[A-Za-z0-9_\-]+[^\s]*)"
 )
 
 
@@ -151,6 +152,30 @@ async def handle_spotify(message: Message):
         return
 
     url = match.group(0)
+
+    # 1. Fast Cache Check: If already downloaded previously, send instantly (0.1s)
+    track_id_match = re.search(r"/track/([A-Za-z0-9]+)", url)
+    cache_key = f"spot_{track_id_match.group(1)}" if track_id_match else None
+
+    if cache_key:
+        cached = get_cached_audio(cache_key)
+        if cached and cached.get("file_id"):
+            artist_formatted = _format_artists(cached.get("artist") or "Unknown")
+            caption = (
+                f"🎵 **{cached.get('title')}**\n"
+                f"👤 **هنرمند:** {artist_formatted}\n\n"
+                f"🤖 دانلود شده از اسپاتیفای (ارسال آنی از کَش)"
+            )
+            await message.reply_audio(
+                audio=cached["file_id"],
+                title=cached.get("title") or "Track",
+                performer=artist_formatted,
+                duration=cached.get("duration") or 0,
+                caption=caption,
+                parse_mode="Markdown",
+            )
+            return
+
     status_msg = await message.reply("⏳ در حال دریافت مشخصات قطعه از اسپاتیفای و دانلود صوت...")
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
 
@@ -171,7 +196,7 @@ async def handle_spotify(message: Message):
             f"🤖 دانلود شده از اسپاتیفای"
         )
 
-        await message.reply_audio(
+        sent_msg = await message.reply_audio(
             audio=audio_file,
             title=track.title,
             performer=artist_formatted,
@@ -181,6 +206,16 @@ async def handle_spotify(message: Message):
             parse_mode="Markdown",
         )
         await status_msg.delete()
+
+        # Cache Telegram file_id for future instant responses
+        if sent_msg and sent_msg.audio and cache_key:
+            save_cached_audio(
+                track_id=cache_key,
+                file_id=sent_msg.audio.file_id,
+                title=track.title,
+                artist=artist_formatted,
+                duration=track.duration,
+            )
 
     except Exception as e:
         logger.exception("Error processing Spotify URL: %s", url)
@@ -385,11 +420,14 @@ async def handle_pinterest(message: Message):
         media = await download_pinterest(url)
         media_path = media.file_path
 
-        clean_title = media.title.strip()
-        if len(clean_title) > 800:
+        clean_title = media.title.strip() if media.title else ""
+        if not clean_title or clean_title.lower() == "pinterest media":
+            clean_title = "مدیا پینترست"
+        elif len(clean_title) > 800:
             clean_title = clean_title[:797] + "..."
 
-        caption = f"📌 {clean_title}\n\n🤖 دانلود شده توسط ربات"
+        uploader_str = f"\n👤 {media.uploader}" if media.uploader and media.uploader != "Pinterest" else ""
+        caption = f"📌 **{clean_title}**{uploader_str}\n\n🤖 دانلود شده توسط ربات"
 
         if media.media_type == "video":
             await message.reply_video(
@@ -398,11 +436,13 @@ async def handle_pinterest(message: Message):
                 duration=media.duration,
                 width=media.width,
                 height=media.height,
+                parse_mode="Markdown",
             )
         else:
             await message.reply_photo(
                 photo=FSInputFile(media.file_path),
                 caption=caption,
+                parse_mode="Markdown",
             )
         await status_msg.delete()
 

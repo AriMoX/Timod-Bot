@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import re
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,12 +42,160 @@ def _resolve_url(url: str) -> str:
     return url
 
 
-def _download_pinterest_sync(url: str) -> PinterestMedia:
-    """Download Pinterest video or original photo."""
-    target_url = _resolve_url(url)
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+def _extract_pin_id(url: str) -> str | None:
+    """Extract numeric Pin ID from Pinterest URL."""
+    m = re.search(r"/pin/(\d+)", url)
+    return m.group(1) if m else None
 
-    # 1. Attempt download using yt-dlp (works for video pins)
+
+def _download_stream(media_url: str, output_path: Path) -> bool:
+    """Fast streaming download of direct photo or video URL."""
+    try:
+        req = urllib.request.Request(
+            media_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.pinterest.com/",
+            }
+        )
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            with open(output_path, "wb") as f:
+                while chunk := resp.read(64 * 1024):
+                    f.write(chunk)
+        return output_path.exists() and output_path.stat().st_size > 0
+    except Exception as e:
+        logger.warning("Stream download failed for %s: %s", media_url[:60], e)
+        return False
+
+
+def _get_pin_resource_data(pin_id: str) -> dict | None:
+    """Fetch structured metadata from Pinterest PinResource endpoint."""
+    endpoint = "https://www.pinterest.com/resource/PinResource/get/"
+    query = {
+        "data": json.dumps({
+            "options": {
+                "field_set_key": "unauth_react_main_pin",
+                "id": pin_id
+            }
+        })
+    }
+    full_url = f"{endpoint}?{urllib.parse.urlencode(query)}"
+    req = urllib.request.Request(
+        full_url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "X-Pinterest-PWS-Handler": "www/[username].js",
+            "Accept": "application/json, text/javascript, */*, q=0.01"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            return res.get("resource_response", {}).get("data")
+    except Exception as e:
+        logger.warning("Failed to query Pinterest PinResource for ID %s: %s", pin_id, e)
+        return None
+
+
+def _find_best_video(data: dict) -> tuple[str | None, int, int | None, int | None]:
+    """Find best MP4 URL, duration (seconds), width, height from Pin data."""
+    videos = data.get("videos")
+    if isinstance(videos, dict) and "video_list" in videos:
+        v_list = videos["video_list"]
+        best_v = None
+        best_res = -1
+        for _, v_info in v_list.items():
+            if not isinstance(v_info, dict):
+                continue
+            url = v_info.get("url")
+            if not url or "m3u8" in url:
+                continue
+            w = v_info.get("width") or 0
+            h = v_info.get("height") or 0
+            res = w * h
+            if res > best_res:
+                best_res = res
+                best_v = v_info
+        if best_v and best_v.get("url"):
+            duration = int((best_v.get("duration") or 0) / 1000)
+            return best_v["url"], duration, best_v.get("width"), best_v.get("height")
+
+    story = data.get("story_pin_data")
+    if isinstance(story, dict):
+        pages = story.get("pages", [])
+        for p in pages:
+            for b in p.get("blocks", []):
+                vid = b.get("video", {})
+                v_list = vid.get("video_list", {})
+                for _, v_info in v_list.items():
+                    if isinstance(v_info, dict) and v_info.get("url") and "m3u8" not in v_info["url"]:
+                        duration = int((v_info.get("duration") or 0) / 1000)
+                        return v_info["url"], duration, v_info.get("width"), v_info.get("height")
+
+    return None, 0, None, None
+
+
+def _download_pinterest_sync(url: str) -> PinterestMedia:
+    """Download Pinterest video or high-res photo."""
+    target_url = _resolve_url(url)
+    pin_id = _extract_pin_id(target_url)
+
+    # 1. Primary Method: Query Pinterest PinResource API (Fastest & most reliable)
+    if pin_id:
+        data = _get_pin_resource_data(pin_id)
+        if data:
+            title = (
+                data.get("title")
+                or data.get("grid_title")
+                or data.get("closeup_unified_description")
+                or data.get("description")
+                or "Pinterest Media"
+            ).strip()
+
+            uploader = (
+                data.get("closeup_attribution", {}).get("full_name")
+                or data.get("pinner", {}).get("username")
+                or "Pinterest"
+            )
+
+            # Check video
+            video_url, duration, width, height = _find_best_video(data)
+            if video_url:
+                out_vid = DOWNLOADS_DIR / f"pin_{pin_id}.mp4"
+                if _download_stream(video_url, out_vid):
+                    return PinterestMedia(
+                        media_type="video",
+                        title=title,
+                        uploader=uploader,
+                        file_path=out_vid,
+                        duration=duration,
+                        width=width,
+                        height=height,
+                    )
+
+            # Check image
+            images = data.get("images", {})
+            if isinstance(images, dict) and images:
+                best_img_url = (
+                    images.get("orig", {}).get("url")
+                    or images.get("736x", {}).get("url")
+                    or images.get("564x", {}).get("url")
+                    or (list(images.values())[-1].get("url") if images else None)
+                )
+                if best_img_url:
+                    out_img = DOWNLOADS_DIR / f"pin_{pin_id}.jpg"
+                    if _download_stream(best_img_url, out_img):
+                        return PinterestMedia(
+                            media_type="photo",
+                            title=title,
+                            uploader=uploader,
+                            file_path=out_img,
+                            width=images.get("orig", {}).get("width"),
+                            height=images.get("orig", {}).get("height"),
+                        )
+
+    # 2. Secondary Method: Attempt download using yt-dlp
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     ydl_opts = {
         "format": "best[ext=mp4]/best",
         "ffmpeg_location": ffmpeg_exe,
@@ -62,12 +212,12 @@ def _download_pinterest_sync(url: str) -> PinterestMedia:
                 if "entries" in info:
                     info = info["entries"][0]
 
-                video_id = info.get("id")
+                v_id = info.get("id") or (pin_id or "media")
                 filename = ydl.prepare_filename(info)
                 file_path = Path(filename)
 
                 if not file_path.exists():
-                    matches = list(DOWNLOADS_DIR.glob(f"pin_{video_id}.*"))
+                    matches = list(DOWNLOADS_DIR.glob(f"pin_{v_id}.*"))
                     if matches:
                         file_path = matches[0]
 
@@ -76,8 +226,6 @@ def _download_pinterest_sync(url: str) -> PinterestMedia:
                     title = info.get("description") or info.get("title") or "Pinterest Media"
                     uploader = info.get("uploader") or "Pinterest"
                     duration = int(info.get("duration") or 0)
-                    width = info.get("width")
-                    height = info.get("height")
 
                     return PinterestMedia(
                         media_type="video" if is_video else "photo",
@@ -85,65 +233,13 @@ def _download_pinterest_sync(url: str) -> PinterestMedia:
                         uploader=uploader,
                         duration=duration,
                         file_path=file_path,
-                        width=width,
-                        height=height,
+                        width=info.get("width"),
+                        height=info.get("height"),
                     )
     except Exception as e:
-        logger.info("yt-dlp could not extract video from Pinterest, falling back to image scraping: %s", e)
+        logger.info("yt-dlp fallback failed for Pinterest: %s", e)
 
-    # 2. Fallback: Extract high-resolution image from Pinterest web page
-    return _scrape_pinterest_image(target_url)
-
-
-def _scrape_pinterest_image(url: str) -> PinterestMedia:
-    """Scrape original high-res image from Pinterest HTML."""
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        html = resp.read().decode("utf-8", errors="ignore")
-
-    # Extract og:image
-    image_match = re.search(r'property="og:image"\s+content="([^"]+)"', html) or re.search(
-        r'content="([^"]+)"\s+property="og:image"', html
-    )
-    if not image_match:
-        raise ValueError("Could not find any video or image in this Pinterest link.")
-
-    image_url = image_match.group(1)
-
-    # Convert 736x or other thumbnails to originals for highest quality
-    orig_url = re.sub(r"/\d+x/", "/originals/", image_url)
-
-    # Extract title
-    title_match = re.search(r'property="og:title"\s+content="([^"]+)"', html)
-    title = title_match.group(1) if title_match else "Pinterest Photo"
-
-    # Extract pin ID from URL
-    pin_id_match = re.search(r"/pin/(\d+)", url)
-    pin_id = pin_id_match.group(1) if pin_id_match else "image"
-    output_path = DOWNLOADS_DIR / f"pin_{pin_id}.jpg"
-
-    # Download the image (try original first, fallback to og:image)
-    for dl_url in [orig_url, image_url]:
-        try:
-            img_req = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(img_req, timeout=10) as img_resp:
-                output_path.write_bytes(img_resp.read())
-            break
-        except Exception:
-            continue
-
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        raise FileNotFoundError("Failed to download Pinterest image.")
-
-    return PinterestMedia(
-        media_type="photo",
-        title=title,
-        uploader="Pinterest",
-        file_path=output_path,
-    )
+    raise ValueError("امکان دریافت این محتوا از پینترست وجود ندارد یا پین خصوصی/حذف شده است.")
 
 
 async def download_pinterest(url: str) -> PinterestMedia:
