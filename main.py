@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import sys
@@ -50,7 +51,7 @@ async def start_healthcheck_server():
     runner = web.AppRunner(app)
     await runner.setup()
 
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     try:
         await site.start()

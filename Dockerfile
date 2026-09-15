@@ -20,6 +20,7 @@ COPY --chown=user . .
 
 RUN mkdir -p downloads && chmod 777 downloads
 
-EXPOSE 7860
+ENV PORT=10000
+EXPOSE 10000
 
 CMD ["python", "main.py"]
