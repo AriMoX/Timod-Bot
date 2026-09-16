@@ -66,10 +66,38 @@ async def start_healthcheck_server():
         except Exception as err:
             return web.json_response({"ok": False, "error": str(err)})
 
+    async def handle_test_spotify(request):
+        spot_url = request.query.get("url", "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT")
+        from bot.services.spotify import download_spotify
+        from bot.utils.cleanup import safe_remove
+        import time
+        t0 = time.time()
+        try:
+            track = await download_spotify(spot_url)
+            t1 = time.time()
+            size = track.file_path.stat().st_size if track.file_path.exists() else 0
+            safe_remove(track.file_path, track.thumbnail_path)
+            return web.json_response({
+                "ok": True,
+                "title": track.title,
+                "artist": track.artist,
+                "duration": track.duration,
+                "file_size": size,
+                "time_sec": round(t1 - t0, 2),
+            })
+        except Exception as err:
+            import traceback
+            return web.json_response({
+                "ok": False,
+                "error": str(err),
+                "trace": traceback.format_exc(),
+            })
+
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
     app.router.add_get("/version", handle_version)
     app.router.add_get("/test-pin", handle_test_pin)
+    app.router.add_get("/test-spotify", handle_test_spotify)
 
     runner = web.AppRunner(app)
     await runner.setup()

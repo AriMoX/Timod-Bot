@@ -192,7 +192,8 @@ async def handle_spotify(message: Message):
 
         caption = (
             f"🎵 **{track.title}**\n"
-            f"👤 **هنرمند:** {artist_formatted}\n\n"
+            f"👤 **هنرمند:** {artist_formatted}\n"
+            f"⚡ **کیفیت:** 320kbps (Original HQ)\n\n"
             f"🤖 دانلود شده از اسپاتیفای"
         )
 
@@ -208,9 +209,10 @@ async def handle_spotify(message: Message):
         await status_msg.delete()
 
         # Cache Telegram file_id for future instant responses
-        if sent_msg and sent_msg.audio and cache_key:
+        track_key = f"spot_{track.track_id}" if track.track_id else cache_key
+        if sent_msg and sent_msg.audio and track_key:
             save_cached_audio(
-                track_id=cache_key,
+                track_id=track_key,
                 file_id=sent_msg.audio.file_id,
                 title=track.title,
                 artist=artist_formatted,
