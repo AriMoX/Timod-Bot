@@ -106,7 +106,7 @@ def _get_spotify_metadata(url: str) -> tuple[str, str, int, str | None, str]:
 
 
 def _download_spotify_sync(url: str) -> SpotifyTrack:
-    """Download matching audio and package with crystal clear audio and HD artwork."""
+    """Download matching audio and package with crystal clear 320kbps audio and HD artwork."""
     title, artist, meta_duration, cover_url, track_id = _get_spotify_metadata(url)
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -118,89 +118,138 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
             img_req = urllib.request.Request(cover_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(img_req, timeout=8) as img_resp:
                 thumb_path.write_bytes(img_resp.read())
+            logger.info("Downloaded Spotify HD cover: %s (%s bytes)", thumb_path.name, thumb_path.stat().st_size)
         except Exception as e:
             logger.warning("Failed to download Spotify cover thumbnail: %s", e)
             thumb_path = None
 
-    # 2. Multi-tier fast search queries
-    search_queries = [
-        f"ytsearch1:{artist} - {title}",
-        f"ytsearch1:{artist} {title} audio",
-        f"scsearch3:{artist} {title}",
-    ]
-
-    raw_output_template = str(DOWNLOADS_DIR / f"raw_spot_{track_id}_%(id)s.%(ext)s")
-    dl_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
+    # Base yt-dlp configuration
+    base_opts = {
+        "format": "bestaudio/best",
         "ffmpeg_location": ffmpeg_exe,
-        "outtmpl": raw_output_template,
+        "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 12,
-        "retries": 2,
+        "socket_timeout": 20,
+        "retries": 3,
+        "js_runtimes": {"node": {}},
     }
 
-    last_error = None
     raw_file_path = None
     actual_duration = meta_duration
+    last_error = None
 
-    for q in search_queries:
-        logger.info("Searching audio candidate for Spotify: %s", q)
+    # 2. Tier 1: YouTube Search with anti-block player clients
+    yt_queries = [
+        f"ytsearch1:{artist} - {title}",
+        f"ytsearch1:{artist} {title} audio",
+    ]
+    yt_opts = {
+        **base_opts,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web_embedded", "web_safari", "android", "web"]
+            }
+        },
+    }
+
+    for q in yt_queries:
+        logger.info("Searching YouTube for Spotify track: %s", q)
         try:
-            with yt_dlp.YoutubeDL(dl_opts) as dl_ydl:
-                dl_info = dl_ydl.extract_info(q, download=True)
-                if not dl_info:
+            with yt_dlp.YoutubeDL(yt_opts) as yt_ydl:
+                info = yt_ydl.extract_info(q, download=True)
+                if not info:
                     continue
-
-                entries = dl_info.get("entries") or [dl_info]
+                entries = info.get("entries") or [info]
                 for entry in entries:
                     if not entry:
                         continue
-
-                    # If candidate is a 30s preview while full song is >60s, skip DRM preview
-                    c_dur = entry.get("duration") or 0
-                    if meta_duration > 60 and c_dur <= 35:
-                        logger.info("Skipping short DRM preview (%ss) for candidate %s", c_dur, entry.get("id"))
-                        continue
-
                     item_id = entry.get("id")
-                    filename = dl_ydl.prepare_filename(entry)
-                    f_path = Path(filename)
-
-                    if not f_path.exists():
-                        matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{item_id}.*"))
-                        if matches:
-                            f_path = matches[0]
-                        else:
-                            continue
-
-                    raw_file_path = f_path
-                    actual_duration = int(c_dur or meta_duration or 0)
-                    logger.info("Found valid audio candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
-                    break
-
+                    c_dur = entry.get("duration") or 0
+                    matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{item_id}.*"))
+                    if matches and matches[0].exists():
+                        raw_file_path = matches[0]
+                        actual_duration = int(c_dur or meta_duration or 0)
+                        logger.info("Found YouTube audio candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                        break
             if raw_file_path and raw_file_path.exists():
                 break
-        except Exception as q_err:
-            logger.warning("Query '%s' failed: %s", q, q_err)
-            last_error = q_err
+        except Exception as yt_err:
+            logger.warning("YouTube query '%s' failed: %s", q, yt_err)
+            last_error = yt_err
+
+    # 3. Tier 2: SoundCloud Search with DRM preview skip
+    if not raw_file_path or not raw_file_path.exists():
+        sc_query = f"scsearch5:{artist} {title}"
+        logger.info("Falling back to SoundCloud search: %s", sc_query)
+        try:
+            with yt_dlp.YoutubeDL(base_opts) as sc_ydl:
+                sc_info = sc_ydl.extract_info(sc_query, download=False)
+                candidates = sc_info.get("entries") or [sc_info]
+                for entry in candidates:
+                    if not entry:
+                        continue
+                    c_dur = entry.get("duration") or 0
+                    # Skip 30s previews (SoundCloud Go+ DRM snippets)
+                    if meta_duration > 60 and c_dur <= 35:
+                        logger.info("Skipping short SoundCloud DRM preview (%ss) for %s", c_dur, entry.get("id"))
+                        continue
+
+                    cand_url = entry.get("webpage_url") or entry.get("url")
+                    if not cand_url:
+                        continue
+
+                    try:
+                        logger.info("Trying SoundCloud candidate: %s (%ss)", entry.get("title"), c_dur)
+                        sc_ydl.extract_info(cand_url, download=True)
+                        cand_id = entry.get("id")
+                        matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{cand_id}.*"))
+                        if matches and matches[0].exists():
+                            raw_file_path = matches[0]
+                            actual_duration = int(c_dur or meta_duration or 0)
+                            logger.info("Downloaded SoundCloud candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                            break
+                    except Exception as cand_err:
+                        logger.warning("SoundCloud candidate failed (%s), trying next", cand_err)
+                        last_error = cand_err
+                        continue
+        except Exception as sc_err:
+            logger.warning("SoundCloud search '%s' failed: %s", sc_query, sc_err)
+            last_error = sc_err
 
     if not raw_file_path or not raw_file_path.exists():
         raise ValueError(f"امکان یافتن یا دانلود فایل صوتی این قطعه وجود ندارد: '{artist} - {title}'. ({last_error})")
 
-    # 3. Fast direct remux with clean tags (Instant <0.1s, no generation loss)
-    ext = raw_file_path.suffix.lower() if raw_file_path.suffix else ".m4a"
-    final_audio_path = DOWNLOADS_DIR / f"spot_{track_id}{ext}"
+    # 4. Master 320kbps MP3 encoding + HD Cover Art embedding (ID3v2.3)
+    final_audio_path = DOWNLOADS_DIR / f"spot_{track_id}.mp3"
     ffmpeg_cmd = [
         ffmpeg_exe,
         "-y",
         "-i", str(raw_file_path),
-        "-c", "copy",
-        "-metadata", f"title={title}",
-        "-metadata", f"artist={artist}",
-        str(final_audio_path),
     ]
+    if thumb_path and thumb_path.exists():
+        ffmpeg_cmd.extend([
+            "-i", str(thumb_path),
+            "-c:a", "libmp3lame",
+            "-b:a", "320k",
+            "-map", "0:a:0",
+            "-map", "1:v:0",
+            "-c:v", "copy",
+            "-id3v2_version", "3",
+            "-metadata", f"title={title}",
+            "-metadata", f"artist={artist}",
+            str(final_audio_path),
+        ])
+    else:
+        ffmpeg_cmd.extend([
+            "-c:a", "libmp3lame",
+            "-b:a", "320k",
+            "-map", "0:a:0",
+            "-metadata", f"title={title}",
+            "-metadata", f"artist={artist}",
+            str(final_audio_path),
+        ])
 
     try:
         subprocess.run(
@@ -208,13 +257,13 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=15,
+            timeout=60,
         )
         safe_remove(raw_file_path)
         output_file = final_audio_path
-        logger.info("Fast remuxed to clean audio file: %s", output_file.name)
+        logger.info("High quality 320kbps MP3 produced with embedded cover: %s (%s bytes)", output_file.name, output_file.stat().st_size)
     except Exception as conv_err:
-        logger.warning("FFmpeg fast remux failed (%s), using raw audio file", conv_err)
+        logger.warning("FFmpeg 320k conversion failed (%s), using raw audio file", conv_err)
         output_file = raw_file_path
 
     return SpotifyTrack(
@@ -230,3 +279,4 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
 async def download_spotify(url: str) -> SpotifyTrack:
     """Asynchronously download Spotify track in a worker thread."""
     return await asyncio.to_thread(_download_spotify_sync, url)
+

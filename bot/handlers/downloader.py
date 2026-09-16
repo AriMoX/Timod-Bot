@@ -1,4 +1,5 @@
 import re
+import html
 import logging
 from aiogram import Router, F
 from aiogram.types import Message, FSInputFile, InputMediaPhoto, InputMediaVideo
@@ -161,9 +162,11 @@ async def handle_spotify(message: Message):
         cached = get_cached_audio(cache_key)
         if cached and cached.get("file_id"):
             artist_formatted = _format_artists(cached.get("artist") or "Unknown")
+            title_esc = html.escape(str(cached.get("title") or "Track"))
+            artist_esc = html.escape(str(artist_formatted))
             caption = (
-                f"🎵 **{cached.get('title')}**\n"
-                f"👤 **هنرمند:** {artist_formatted}\n\n"
+                f"🎵 <b>{title_esc}</b>\n"
+                f"👤 <b>هنرمند:</b> {artist_esc}\n\n"
                 f"🤖 دانلود شده از اسپاتیفای (ارسال آنی از کَش)"
             )
             await message.reply_audio(
@@ -172,7 +175,7 @@ async def handle_spotify(message: Message):
                 performer=artist_formatted,
                 duration=cached.get("duration") or 0,
                 caption=caption,
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             return
 
@@ -190,10 +193,12 @@ async def handle_spotify(message: Message):
         audio_file = FSInputFile(track.file_path)
         thumb_file = FSInputFile(track.thumbnail_path) if track.thumbnail_path and track.thumbnail_path.exists() else None
 
+        title_esc = html.escape(str(track.title))
+        artist_esc = html.escape(str(artist_formatted))
         caption = (
-            f"🎵 **{track.title}**\n"
-            f"👤 **هنرمند:** {artist_formatted}\n"
-            f"⚡ **کیفیت:** 320kbps (Original HQ)\n\n"
+            f"🎵 <b>{title_esc}</b>\n"
+            f"👤 <b>هنرمند:</b> {artist_esc}\n"
+            f"⚡ <b>کیفیت:</b> 320kbps (Original HQ)\n\n"
             f"🤖 دانلود شده از اسپاتیفای"
         )
 
@@ -204,7 +209,7 @@ async def handle_spotify(message: Message):
             duration=track.duration,
             thumbnail=thumb_file,
             caption=caption,
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         await status_msg.delete()
 

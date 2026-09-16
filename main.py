@@ -76,6 +76,8 @@ async def start_healthcheck_server():
             track = await download_spotify(spot_url)
             t1 = time.time()
             size = track.file_path.stat().st_size if track.file_path.exists() else 0
+            has_thumb = bool(track.thumbnail_path and track.thumbnail_path.exists())
+            thumb_size = track.thumbnail_path.stat().st_size if has_thumb else 0
             safe_remove(track.file_path, track.thumbnail_path)
             return web.json_response({
                 "ok": True,
@@ -83,6 +85,8 @@ async def start_healthcheck_server():
                 "artist": track.artist,
                 "duration": track.duration,
                 "file_size": size,
+                "has_thumb": has_thumb,
+                "thumb_size": thumb_size,
                 "time_sec": round(t1 - t0, 2),
             })
         except Exception as err:
