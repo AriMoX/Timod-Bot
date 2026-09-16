@@ -105,21 +105,19 @@ async def start_healthcheck_server():
             "no_warnings": False,
             "format": "bestaudio/best",
             "noplaylist": True,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "ios"]
-                }
-            }
+            "js_runtimes": {"node": {}},
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(q, download=False)
                 entries = info.get("entries", [])
+                e = entries[0] if entries else info
+                formats = [f.get("format_id") for f in e.get("formats", []) if f.get("vcodec") == "none"]
                 return web.json_response({
                     "ok": True,
-                    "count": len(entries),
-                    "first_id": entries[0].get("id") if entries else None,
-                    "first_title": entries[0].get("title") if entries else None,
+                    "id": e.get("id"),
+                    "title": e.get("title"),
+                    "audio_formats": formats[:10],
                 })
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})

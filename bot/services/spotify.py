@@ -138,7 +138,7 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
 
     raw_file_path = None
     actual_duration = meta_duration
-    last_error = None
+    all_errors = []
 
     # 2. Tier 1: YouTube Search with Node.js JS solver
     yt_queries = [
@@ -172,14 +172,18 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
                 break
         except Exception as yt_err:
             logger.warning("YouTube query '%s' failed: %s", q, yt_err)
-            last_error = yt_err
+            all_errors.append(f"YouTube '{q}': {yt_err}")
 
     # 3. Tier 2: SoundCloud Search with DRM preview skip
     if not raw_file_path or not raw_file_path.exists():
         sc_query = f"scsearch5:{artist} {title}"
         logger.info("Falling back to SoundCloud search: %s", sc_query)
+        sc_search_opts = {
+            **base_opts,
+            "extract_flat": "in_playlist",
+        }
         try:
-            with yt_dlp.YoutubeDL(base_opts) as sc_ydl:
+            with yt_dlp.YoutubeDL(sc_search_opts) as sc_ydl:
                 sc_info = sc_ydl.extract_info(sc_query, download=False)
                 candidates = sc_info.get("entries") or [sc_info]
                 for entry in candidates:
@@ -197,7 +201,8 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
 
                     try:
                         logger.info("Trying SoundCloud candidate: %s (%ss)", entry.get("title"), c_dur)
-                        sc_ydl.extract_info(cand_url, download=True)
+                        with yt_dlp.YoutubeDL(base_opts) as sc_dl:
+                            sc_dl.extract_info(cand_url, download=True)
                         cand_id = entry.get("id")
                         matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{cand_id}.*"))
                         if matches and matches[0].exists():
@@ -207,14 +212,15 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
                             break
                     except Exception as cand_err:
                         logger.warning("SoundCloud candidate failed (%s), trying next", cand_err)
-                        last_error = cand_err
+                        all_errors.append(f"SC candidate {entry.get('id')}: {cand_err}")
                         continue
         except Exception as sc_err:
             logger.warning("SoundCloud search '%s' failed: %s", sc_query, sc_err)
-            last_error = sc_err
+            all_errors.append(f"SoundCloud search: {sc_err}")
 
     if not raw_file_path or not raw_file_path.exists():
-        raise ValueError(f"امکان یافتن یا دانلود فایل صوتی این قطعه وجود ندارد: '{artist} - {title}'. ({last_error})")
+        err_msg = " | ".join(all_errors)
+        raise ValueError(f"امکان یافتن یا دانلود فایل صوتی این قطعه وجود ندارد: '{artist} - {title}'. ({err_msg})")
 
     # 4. Master 320kbps MP3 encoding + HD Cover Art embedding (ID3v2.3)
     final_audio_path = DOWNLOADS_DIR / f"spot_{track_id}.mp3"
