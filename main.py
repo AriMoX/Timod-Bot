@@ -98,32 +98,68 @@ async def start_healthcheck_server():
             })
 
     async def handle_debug_yt(request):
-        q = request.query.get("q", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        client = request.query.get("client")
-        import yt_dlp, traceback
-        opts = {
-            "quiet": True,
-            "no_warnings": False,
-            "noplaylist": True,
-            "js_runtimes": {"node": {}},
-        }
-        if client:
-            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(q, download=False)
-                formats = [
-                    f"{f.get('format_id')}: {f.get('ext')} v={f.get('vcodec')} a={f.get('acodec')} abr={f.get('abr')}"
-                    for f in info.get("formats", [])
-                ]
-                return web.json_response({
-                    "ok": True,
-                    "id": info.get("id"),
-                    "title": info.get("title"),
-                    "formats": formats[:15],
-                })
-        except Exception as e:
-            return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+        v_id = request.query.get("id", "dQw4w9WgXcQ")
+        target_url = f"https://www.youtube.com/watch?v={v_id}"
+        import urllib.request, json
+
+        results = {}
+
+        # 1. Test Invidious instances
+        invid_instances = [
+            "https://invidious.nerdvpn.de",
+            "https://inv.tux.pizza",
+            "https://invidious.drgns.space",
+            "https://yt.artemislena.eu",
+            "https://yewtu.be",
+        ]
+        for inst in invid_instances:
+            try:
+                req = urllib.request.Request(
+                    f"{inst}/api/v1/videos/{v_id}",
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                with urllib.request.urlopen(req, timeout=6) as r:
+                    data = json.loads(r.read().decode())
+                    streams = data.get("formatStreams", [])
+                    results[f"invidious:{inst}"] = {
+                        "ok": True,
+                        "title": data.get("title"),
+                        "streams_count": len(streams),
+                        "first_stream_url": streams[0].get("url")[:80] if streams else None,
+                    }
+                    break
+            except Exception as e:
+                results[f"invidious:{inst}"] = {"ok": False, "err": str(e)}
+
+        # 2. Test Cobalt instances
+        cobalt_instances = [
+            "https://co.eepy.today",
+            "https://cobalt.canine.tools",
+            "https://cobalt.streamrip.app",
+            "https://dl.khub.win",
+            "https://cobalt.xy2401.com",
+        ]
+        for c_inst in cobalt_instances:
+            try:
+                payload = json.dumps({"url": target_url, "videoQuality": "720"}).encode()
+                req = urllib.request.Request(
+                    c_inst,
+                    data=payload,
+                    headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=6) as r:
+                    data = json.loads(r.read().decode())
+                    results[f"cobalt:{c_inst}"] = {
+                        "ok": True,
+                        "status": data.get("status"),
+                        "url": data.get("url", "")[:80],
+                    }
+                    break
+            except Exception as e:
+                results[f"cobalt:{c_inst}"] = {"ok": False, "err": str(e)}
+
+        return web.json_response(results)
 
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
