@@ -98,127 +98,29 @@ async def start_healthcheck_server():
             })
 
     async def handle_debug_yt(request):
-        v_id = request.query.get("id", "dQw4w9WgXcQ")
-        v_url = f"https://www.youtube.com/watch?v={v_id}"
-        req_client = request.query.get("client")
-        import urllib.request, json, asyncio, yt_dlp, traceback
+        v_url = request.query.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        try:
+            from bot.services.youtube import download_youtube
+            from bot.utils.cleanup import safe_remove
+            vid = await download_youtube(v_url)
+            size = vid.file_path.stat().st_size if vid.file_path.exists() else 0
+            safe_remove(vid.file_path)
+            return web.json_response({
+                "ok": True,
+                "title": vid.title,
+                "uploader": vid.uploader,
+                "duration": vid.duration,
+                "file_size": size,
+            })
+        except Exception as e:
+            import traceback
+            return web.json_response({
+                "ok": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "trace": traceback.format_exc(),
+            })
 
-        if req_client:
-            def _test_single():
-                extra = {}
-                if req_client != "default":
-                    extra = {"extractor_args": {"youtube": {"player_client": [req_client]}}}
-                opts = {
-                    "quiet": True,
-                    "no_warnings": False,
-                    "noplaylist": True,
-                    "socket_timeout": 12,
-                    "js_runtimes": {"node": {}},
-                    **extra,
-                }
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(v_url, download=False)
-                    formats = [f.get("format_id") for f in info.get("formats", [])]
-                    return {
-                        "ok": True,
-                        "client": req_client,
-                        "title": info.get("title"),
-                        "formats_count": len(formats),
-                        "formats": formats[:10],
-                    }
-            try:
-                res = await asyncio.wait_for(asyncio.to_thread(_test_single), timeout=25)
-                return web.json_response(res)
-            except Exception as e:
-                return web.json_response({"ok": False, "client": req_client, "error": str(e), "trace": traceback.format_exc()})
-
-        report = {"cobalt": {}, "piped": {}, "y2mate": {}}
-
-        # 1. Test Cobalt via instances.hyper.lol
-        def _test_cobalts():
-            c_res = {}
-            try:
-                req = urllib.request.Request("https://instances.hyper.lol/instances.json", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    inst_list = json.loads(r.read().decode("utf-8"))
-                    c_res["instances_found"] = len(inst_list)
-                    # Filter instances that are online and have api enabled
-                    for item in inst_list:
-                        api_url = item.get("api") if isinstance(item, dict) else None
-                        if not api_url:
-                            continue
-                        try:
-                            payload = json.dumps({"url": v_url}).encode("utf-8")
-                            post_req = urllib.request.Request(
-                                api_url,
-                                data=payload,
-                                headers={
-                                    "Accept": "application/json",
-                                    "Content-Type": "application/json",
-                                    "User-Agent": "Mozilla/5.0",
-                                },
-                                method="POST"
-                            )
-                            with urllib.request.urlopen(post_req, timeout=4) as pr:
-                                pdata = json.loads(pr.read().decode("utf-8"))
-                                stream_url = pdata.get("url")
-                                if stream_url:
-                                    c_res["winner"] = {"api": api_url, "url": stream_url[:100]}
-                                    return c_res, api_url, stream_url
-                        except Exception as ie:
-                            c_res[api_url] = str(ie)[:60]
-                            if len(c_res) > 8:
-                                break
-            except Exception as e:
-                c_res["fetch_error"] = str(e)[:100]
-            return c_res, None, None
-
-        # 2. Test Invidious instances
-        def _test_invidious():
-            inv_res = {}
-            import ssl
-            ctx = ssl._create_unverified_context()
-            candidates = [
-                "https://yewtu.be",
-                "https://inv.nadeko.net",
-                "https://invidious.nerdvpn.de",
-                "https://invidious.drgns.space",
-                "https://yt.artemislena.eu",
-                "https://iv.ggtyler.dev",
-                "https://invidious.flokinet.to",
-                "https://invidious.privacydev.net",
-                "https://invidious.lunar.icu",
-                "https://invidious.asir.dev",
-                "https://inv.bp.mutahar.rocks",
-                "https://invidious.jing.rocks",
-                "https://invidious.protokolla.fi",
-                "https://invidious.einfachzocken.eu",
-            ]
-            for uri in candidates:
-                try:
-                    req = urllib.request.Request(f"{uri}/api/v1/videos/{v_id}", headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=4, context=ctx) as r:
-                        data = json.loads(r.read().decode("utf-8"))
-                        streams = data.get("formatStreams", [])
-                        if streams:
-                            stream_url = streams[0].get("url")
-                            inv_res["winner"] = {"uri": uri, "title": data.get("title"), "stream_url": stream_url[:100]}
-                            return inv_res, uri, stream_url
-                        inv_res[uri] = f"no streams (title: {data.get('title')})"
-                except Exception as ie:
-                    inv_res[uri] = str(ie)[:60]
-            return inv_res, None, None
-
-        # Execute tests concurrently
-        c_task = asyncio.to_thread(_test_cobalts)
-        i_task = asyncio.to_thread(_test_invidious)
-
-        c_done, i_done = await asyncio.gather(c_task, i_task, return_exceptions=True)
-
-        return web.json_response({
-            "cobalt": c_done if not isinstance(c_done, Exception) else str(c_done),
-            "invidious": i_done if not isinstance(i_done, Exception) else str(i_done),
-        })
 
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)

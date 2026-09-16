@@ -8,7 +8,7 @@ from aiogram.enums import ChatAction
 from bot.services.soundcloud import download_soundcloud
 from bot.services.twitter import download_twitter
 from bot.services.instagram import download_instagram, InstagramLoginRequiredError
-from bot.services.youtube import download_youtube
+from bot.services.youtube import download_youtube, YouTubeBotDetectionError
 from bot.services.tiktok import download_tiktok
 from bot.services.pinterest import download_pinterest
 from bot.services.spotify import download_spotify
@@ -341,11 +341,12 @@ async def handle_youtube(message: Message):
         video = await download_youtube(url)
         video_path = video.file_path
 
-        clean_title = video.title.strip()
+        clean_title = html.escape(video.title.strip())
         if len(clean_title) > 800:
             clean_title = clean_title[:797] + "..."
 
-        caption = f"🎬 {clean_title}\n\n📺 {video.uploader}\n🤖 دانلود شده توسط ربات"
+        clean_uploader = html.escape(video.uploader)
+        caption = f"🎬 <b>{clean_title}</b>\n\n📺 {clean_uploader}\n🤖 دانلود شده توسط ربات"
 
         await message.reply_video(
             video=FSInputFile(video.file_path),
@@ -353,13 +354,23 @@ async def handle_youtube(message: Message):
             duration=video.duration,
             width=video.width,
             height=video.height,
+            parse_mode="HTML",
         )
         await status_msg.delete()
 
+    except YouTubeBotDetectionError:
+        logger.warning("YouTube bot protection / login required for URL: %s", url)
+        await status_msg.edit_text(
+            "⚠️ <b>یوتیوب دسترسی مستقیم سرور به این مدیا را محدود کرده است.</b>\n\n"
+            "گوگل/یوتیوب برای دانلود ویدیو از سرورهای ابری نیاز به کوکی مرورگر (Cookie) دارد.\n\n"
+            "💡 <b>راهکار دائمی و آسان:</b>\n"
+            "می‌توانید یک فایل <code>cookies.txt</code> (صادر شده از مرورگر) در تنظیمات ربات قرار دهید یا مقدار <code>YOUTUBE_COOKIES_TEXT</code> را در متغیرهای سرور قرار دهید تا تمام ویدیوها و شورت‌های یوتیوب با حداکثر سرعت دانلود شوند.",
+            parse_mode="HTML",
+        )
     except ValueError as ve:
         # Handles 50MB file size limit or other expected value errors
         logger.warning("YouTube download value error for %s: %s", url, ve)
-        await status_msg.edit_text(f"⚠️ {str(ve)}")
+        await status_msg.edit_text(f"⚠️ {html.escape(str(ve))}", parse_mode="HTML")
     except Exception as e:
         logger.exception("Error processing YouTube URL: %s", url)
         await status_msg.edit_text(
