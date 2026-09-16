@@ -167,6 +167,7 @@ def _get_spotify_metadata(url_or_id: str) -> SpotifyTrackMetadata:
                         key=lambda x: (x.get("maxWidth") or 0) * (x.get("maxHeight") or 0),
                         reverse=True
                     )[0]
+                    cover_url = best_img.get("url")
             rel_date = None
             rel_obj = entity.get("releaseDate")
             if isinstance(rel_obj, dict) and rel_obj.get("isoString"):
@@ -289,7 +290,7 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
     Enrich track metadata with complete album, album_artist, genre, release_date,
     track_number, and disc_number for high-fidelity ID3 tagging.
     """
-    if meta.album and meta.genre and meta.release_date and meta.album_artist and meta.track_number:
+    if meta.album and meta.genre and meta.release_date and meta.album_artist and meta.track_number and meta.cover_url:
         return meta
 
     album = meta.album
@@ -298,6 +299,7 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
     release_date = meta.release_date
     track_number = meta.track_number
     disc_number = meta.disc_number
+    cover_url = meta.cover_url
 
     # 1. Deezer direct track lookup if ID starts with dz_
     if meta.track_id and meta.track_id.startswith("dz_") and len(meta.track_id) > 3:
@@ -311,6 +313,9 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
                 release_date = release_date or t.get("release_date")
                 track_number = track_number or t.get("track_position")
                 disc_number = disc_number or t.get("disk_number")
+                if not cover_url:
+                    al = t.get("album", {})
+                    cover_url = al.get("cover_xl") or al.get("cover_big") or al.get("cover_medium")
                 al_id = t.get("album", {}).get("id")
                 if al_id and not genre:
                     try:
@@ -326,7 +331,7 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
             logger.debug("Deezer track lookup failed: %s", de)
 
     # 2. Deezer search by artist + clean title
-    if not album or not genre or not release_date:
+    if not album or not genre or not release_date or not cover_url:
         try:
             import urllib.parse
             clean_t = _clean_title(meta.title)
@@ -348,6 +353,9 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
                             release_date = release_date or t_info.get("release_date")
                             track_number = track_number or t_info.get("track_position")
                             disc_number = disc_number or t_info.get("disk_number")
+                            if not cover_url:
+                                al = t_info.get("album", {})
+                                cover_url = al.get("cover_xl") or al.get("cover_big") or al.get("cover_medium")
                             al_id = t_info.get("album", {}).get("id")
                             if al_id and not genre:
                                 try:
@@ -363,7 +371,7 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
             logger.debug("Deezer search enrichment failed: %s", se)
 
     # 3. iTunes search fallback
-    if not album or not genre or not release_date:
+    if not album or not genre or not release_date or not cover_url:
         try:
             import urllib.parse
             clean_t = _clean_title(meta.title)
@@ -383,6 +391,9 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
                         release_date = raw_date[:10]
                     track_number = track_number or it.get("trackNumber")
                     disc_number = disc_number or it.get("discNumber")
+                    if not cover_url:
+                        raw_art = it.get("artworkUrl100") or ""
+                        cover_url = raw_art.replace("100x100bb", "600x600bb") if raw_art else None
         except Exception as ie:
             logger.debug("iTunes search enrichment failed: %s", ie)
 
@@ -410,7 +421,7 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
         title=meta.title,
         artist=meta.artist,
         duration=meta.duration,
-        cover_url=meta.cover_url,
+        cover_url=cover_url,
         track_id=meta.track_id,
         album=album,
         album_artist=album_artist,

@@ -119,16 +119,16 @@ def save_track_meta_db(
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(track_id) DO UPDATE SET
-                    title=excluded.title,
-                    artist=excluded.artist,
-                    duration=excluded.duration,
-                    cover_url=excluded.cover_url,
-                    album=excluded.album,
-                    album_artist=excluded.album_artist,
-                    genre=excluded.genre,
-                    release_date=excluded.release_date,
-                    track_number=excluded.track_number,
-                    disc_number=excluded.disc_number,
+                    title=COALESCE(excluded.title, track_meta_cache.title),
+                    artist=COALESCE(excluded.artist, track_meta_cache.artist),
+                    duration=COALESCE(excluded.duration, track_meta_cache.duration),
+                    cover_url=COALESCE(excluded.cover_url, track_meta_cache.cover_url),
+                    album=COALESCE(excluded.album, track_meta_cache.album),
+                    album_artist=COALESCE(excluded.album_artist, track_meta_cache.album_artist),
+                    genre=COALESCE(excluded.genre, track_meta_cache.genre),
+                    release_date=COALESCE(excluded.release_date, track_meta_cache.release_date),
+                    track_number=COALESCE(excluded.track_number, track_meta_cache.track_number),
+                    disc_number=COALESCE(excluded.disc_number, track_meta_cache.disc_number),
                     updated_at=CURRENT_TIMESTAMP
                 """,
                 (
