@@ -1,5 +1,7 @@
+import os
 import asyncio
 import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 import imageio_ffmpeg
@@ -11,6 +13,7 @@ from bot.config import (
     YOUTUBE_COOKIE_FILE,
     YOUTUBE_COOKIES_TEXT,
 )
+from bot.utils.cleanup import safe_remove
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +35,48 @@ class YouTubeVideo:
     height: int | None = None
 
 
+def _sanitize_cookies(cookie_content: str) -> str:
+    """
+    Sanitizes Netscape cookies by removing volatile session-binding tokens
+    (SIDTS, SIDCC, YSC) which trigger Google's 'The page needs to be reloaded' error
+    when used on a different IP or machine than where they were exported.
+    """
+    lines = cookie_content.replace("\r\n", "\n").replace("\\n", "\n").replace("\\t", "\t").splitlines()
+    clean_lines = []
+    for line in lines:
+        if line.startswith("#") or not line.strip():
+            clean_lines.append(line)
+            continue
+        # Drop volatile tokens that trigger session reload challenges
+        if any(bad_token in line for bad_token in ["SIDTS", "SIDCC", "YSC"]):
+            continue
+        clean_lines.append(line)
+    return "\n".join(clean_lines).strip() + "\n"
+
+
 def _prepare_youtube_cookie_file() -> str | None:
     """Returns path to cookie file if configured via file or env var."""
-    if YOUTUBE_COOKIE_FILE and Path(YOUTUBE_COOKIE_FILE).exists():
-        return str(YOUTUBE_COOKIE_FILE)
-
-    if YOUTUBE_COOKIES_TEXT:
+    raw_cookies = os.getenv("YOUTUBE_COOKIES_TEXT") or YOUTUBE_COOKIES_TEXT
+    if raw_cookies:
+        sanitized = _sanitize_cookies(raw_cookies)
         cookie_path = DOWNLOADS_DIR / "yt_cookies.txt"
-        cookie_path.write_text(YOUTUBE_COOKIES_TEXT.strip(), encoding="utf-8")
+        cookie_path.write_text(sanitized, encoding="utf-8")
         return str(cookie_path)
 
-    # Check for cookies.txt in root directory
-    root_cookies = DOWNLOADS_DIR.parent / "cookies.txt"
-    if root_cookies.exists():
-        return str(root_cookies)
+    if YOUTUBE_COOKIE_FILE and Path(YOUTUBE_COOKIE_FILE).exists():
+        cookie_path = Path(YOUTUBE_COOKIE_FILE)
+        sanitized = _sanitize_cookies(cookie_path.read_text(encoding="utf-8", errors="ignore"))
+        clean_file = DOWNLOADS_DIR / "yt_cookies.txt"
+        clean_file.write_text(sanitized, encoding="utf-8")
+        return str(clean_file)
+
+    # Check for cookies.txt in root directory or downloads directory
+    for candidate in [DOWNLOADS_DIR / "yt_cookies.txt", DOWNLOADS_DIR / "cookies.txt", DOWNLOADS_DIR.parent / "cookies.txt"]:
+        if candidate.exists() and candidate.stat().st_size > 50:
+            sanitized = _sanitize_cookies(candidate.read_text(encoding="utf-8", errors="ignore"))
+            clean_file = DOWNLOADS_DIR / "yt_cookies.txt"
+            clean_file.write_text(sanitized, encoding="utf-8")
+            return str(clean_file)
 
     return None
 
@@ -54,17 +85,23 @@ def _download_youtube_sync(url: str) -> YouTubeVideo:
     """Synchronously download YouTube video or Shorts using yt-dlp."""
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
-    # Prefer MP4 container with max quality under 50MB for Telegram compatibility
+    # Resilient format selector: picks best video and audio up to 1080p,
+    # and remuxes/merges them seamlessly to MP4 format for Telegram playback
     ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best",
+        "merge_output_format": "mp4",
         "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / "yt_%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 20,
-        "retries": 1,
+        "socket_timeout": 30,
+        "retries": 2,
         "js_runtimes": {"node": {}},
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
 
     cookie_file = _prepare_youtube_cookie_file()
@@ -95,6 +132,22 @@ def _download_youtube_sync(url: str) -> YouTubeVideo:
                     file_path = matches[0]
                 else:
                     raise FileNotFoundError(f"YouTube video file not found for ID: {video_id}")
+
+            # Ensure MP4 container for native Telegram video player
+            if file_path.suffix.lower() != ".mp4":
+                mp4_path = file_path.with_suffix(".mp4")
+                try:
+                    subprocess.run(
+                        [ffmpeg_exe, "-y", "-i", str(file_path), "-c", "copy", str(mp4_path)],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=60,
+                    )
+                    safe_remove(file_path)
+                    file_path = mp4_path
+                except Exception as remux_err:
+                    logger.warning("Failed to remux %s to mp4: %s", file_path, remux_err)
 
             # Check Telegram 50MB upload limit
             if file_path.stat().st_size > TELEGRAM_MAX_BYTES:

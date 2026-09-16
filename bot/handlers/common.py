@@ -230,4 +230,35 @@ async def cmd_users_list(message: Message):
     await message.reply("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(F.document)
+async def handle_admin_document(message: Message):
+    """Allow Admin to upload cookies.txt directly to the bot."""
+    if not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+
+    doc = message.document
+    filename = (doc.file_name or "").lower()
+    caption = (message.caption or "").lower()
+
+    if "cookie" in filename or "cookie" in caption or filename.endswith(".txt"):
+        status_msg = await message.reply("⏳ در حال دریافت و فعال‌سازی فایل کوکی یوتیوب...")
+        dest_path = DOWNLOADS_DIR / "yt_cookies.txt"
+        try:
+            await message.bot.download(doc, destination=dest_path)
+            from bot.services.youtube import _sanitize_cookies
+            content = dest_path.read_text(encoding="utf-8", errors="ignore")
+            sanitized = _sanitize_cookies(content)
+            dest_path.write_text(sanitized, encoding="utf-8")
+
+            await status_msg.edit_text(
+                "✅ <b>فایل کوکی یوتیوب با موفقیت ذخیره و فعال شد!</b>\n\n"
+                "تمامی نشست‌های حساس پاکسازی شده و ربات آماده دانلود ویدیوها و شورت‌های یوتیوب است.",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.exception("Failed to process uploaded cookie file")
+            await status_msg.edit_text(f"❌ خطا در پردازش فایل کوکی: {e}")
+
+
+
 
