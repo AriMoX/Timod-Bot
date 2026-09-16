@@ -165,12 +165,56 @@ async def start_healthcheck_server():
 
 
 
+    async def handle_test_spot_search(request):
+        q = request.query.get("q", "shayea")
+        import urllib.request, urllib.parse, json
+        try:
+            url = "https://open.spotify.com/get_access_token?reason=transport&productType=web_player"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Referer": "https://open.spotify.com/",
+                    "Accept": "application/json",
+                }
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                token_data = json.loads(resp.read().decode("utf-8"))
+                token = token_data.get("accessToken")
+                
+            s_url = f"https://api.spotify.com/v1/search?type=track&limit=5&q={urllib.parse.quote(q)}"
+            s_req = urllib.request.Request(
+                s_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                }
+            )
+            with urllib.request.urlopen(s_req, timeout=8) as s_resp:
+                s_data = json.loads(s_resp.read().decode("utf-8"))
+                items = s_data.get("tracks", {}).get("items", [])
+                tracks = []
+                for t in items:
+                    tracks.append({
+                        "id": t.get("id"),
+                        "name": t.get("name"),
+                        "artist": ", ".join([a["name"] for a in t.get("artists", []) if a.get("name")]),
+                        "duration": int((t.get("duration_ms") or 0) / 1000),
+                        "cover": t.get("album", {}).get("images", [{}])[0].get("url"),
+                    })
+                return web.json_response({"ok": True, "tracks": tracks})
+        except Exception as e:
+            import traceback
+            return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
     app.router.add_get("/version", handle_version)
     app.router.add_get("/test-pin", handle_test_pin)
     app.router.add_get("/test-spotify", handle_test_spotify)
     app.router.add_get("/test-spotify-album", handle_test_spotify_album)
+    app.router.add_get("/test-spot-search", handle_test_spot_search)
     app.router.add_get("/debug-yt", handle_debug_yt)
 
     runner = web.AppRunner(app)
