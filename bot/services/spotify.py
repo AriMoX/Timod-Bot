@@ -283,9 +283,9 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
             logger.warning("Failed to download Spotify cover thumbnail: %s", e)
             thumb_path = None
 
-    # Base yt-dlp configuration
+    # Base yt-dlp configuration (prefer fast audio stream 140/m4a)
     base_opts = {
-        "format": "bestaudio/best",
+        "format": "140/bestaudio[ext=m4a]/bestaudio/best",
         "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_%(id)s.%(ext)s"),
         "quiet": True,
@@ -396,7 +396,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         err_msg = " | ".join(all_errors)
         raise ValueError(f"امکان یافتن یا دانلود فایل صوتی این قطعه وجود ندارد: '{artist} - {title}'. ({err_msg})")
 
-    # 4. Master 320kbps MP3 encoding + HD Cover Art embedding (ID3v2.3)
+    # 4. Master Fast MP3 encoding with HD Cover Art embedding (ID3v2.3)
     final_audio_path = DOWNLOADS_DIR / f"spot_{track_id}.mp3"
     ffmpeg_cmd = [
         ffmpeg_exe,
@@ -407,7 +407,8 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         ffmpeg_cmd.extend([
             "-i", str(thumb_path),
             "-c:a", "libmp3lame",
-            "-b:a", "320k",
+            "-b:a", "256k",
+            "-threads", "0",
             "-map", "0:a:0",
             "-map", "1:v:0",
             "-c:v", "copy",
@@ -419,7 +420,8 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
     else:
         ffmpeg_cmd.extend([
             "-c:a", "libmp3lame",
-            "-b:a", "320k",
+            "-b:a", "256k",
+            "-threads", "0",
             "-map", "0:a:0",
             "-metadata", f"title={title}",
             "-metadata", f"artist={artist}",
@@ -436,9 +438,9 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         )
         safe_remove(raw_file_path)
         output_file = final_audio_path
-        logger.info("Produced 320kbps MP3 with embedded cover: %s (%s bytes)", output_file.name, output_file.stat().st_size)
+        logger.info("Produced fast MP3 with embedded cover: %s (%s bytes)", output_file.name, output_file.stat().st_size)
     except Exception as conv_err:
-        logger.warning("FFmpeg 320k conversion failed (%s), using raw audio file", conv_err)
+        logger.warning("FFmpeg fast conversion failed (%s), using raw audio file", conv_err)
         output_file = raw_file_path
 
     return SpotifyTrack(
@@ -519,17 +521,74 @@ _active_prep_tasks: dict[str, asyncio.Task] = {}
 
 
 def get_cached_track_meta(track_id: str) -> SpotifyTrackMetadata | None:
-    """Retrieve in-memory cached track metadata from recent searches."""
-    return _INLINE_TRACK_CACHE.get(track_id)
+    """Retrieve in-memory cached track metadata from recent searches, SQLite DB, or Deezer API."""
+    meta = _INLINE_TRACK_CACHE.get(track_id)
+    if meta:
+        return meta
+
+    try:
+        from bot.services.cache import get_track_meta_db
+        db_data = get_track_meta_db(track_id)
+        if db_data:
+            meta = SpotifyTrackMetadata(
+                title=db_data["title"],
+                artist=db_data["artist"],
+                duration=db_data["duration"],
+                cover_url=db_data["cover_url"],
+                track_id=track_id,
+            )
+            _INLINE_TRACK_CACHE[track_id] = meta
+            return meta
+    except Exception as e:
+        logger.warning("Error fetching track meta from DB for %s: %s", track_id, e)
+
+    # Deezer ID fast recovery (dz_...)
+    if track_id.startswith("dz_") and len(track_id) > 3:
+        dz_id = track_id[3:]
+        try:
+            dz_url = f"https://api.deezer.com/track/{dz_id}"
+            req = urllib.request.Request(dz_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                t_name = _clean_title(data.get("title") or "Music Track")
+                a_name = data.get("artist", {}).get("name") or "Artist"
+                dur = data.get("duration") or 0
+                album = data.get("album", {})
+                cover_url = album.get("cover_big") or album.get("cover_medium")
+                meta = SpotifyTrackMetadata(
+                    title=t_name,
+                    artist=a_name,
+                    duration=dur,
+                    cover_url=cover_url,
+                    track_id=track_id,
+                )
+                _cache_track_meta(meta)
+                return meta
+        except Exception as de:
+            logger.warning("Failed to recover Deezer track metadata for %s: %s", track_id, de)
+
+    return None
 
 
 def _cache_track_meta(meta: SpotifyTrackMetadata):
-    """Store track metadata in fast LRU-like memory cache."""
+    """Store track metadata in fast LRU-like memory cache and SQLite."""
     if meta and meta.track_id:
         if len(_INLINE_TRACK_CACHE) > 500:
             for k in list(_INLINE_TRACK_CACHE.keys())[:100]:
                 _INLINE_TRACK_CACHE.pop(k, None)
         _INLINE_TRACK_CACHE[meta.track_id] = meta
+        try:
+            from bot.services.cache import save_track_meta_db
+            save_track_meta_db(
+                track_id=meta.track_id,
+                title=meta.title,
+                artist=meta.artist,
+                duration=meta.duration,
+                cover_url=meta.cover_url,
+            )
+        except Exception as e:
+            logger.warning("Failed to persist track meta to DB: %s", e)
+
 
 
 def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetadata]:

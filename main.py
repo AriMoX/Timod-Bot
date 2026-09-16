@@ -243,18 +243,45 @@ async def start_healthcheck_server():
             })
 
 
+    _audio_request_logs = []
+
     async def handle_serve_audio(request):
+        import time
+        t_start = time.time()
+        client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.remote or "unknown"
+        user_agent = request.headers.get("User-Agent", "unknown")
+        method = request.method
+        filename = request.match_info.get("filename", "")
+        req_entry = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": client_ip,
+            "ua": user_agent,
+            "method": method,
+            "filename": filename,
+            "range": request.headers.get("Range"),
+            "status": "pending",
+        }
+        _audio_request_logs.append(req_entry)
+        if len(_audio_request_logs) > 100:
+            _audio_request_logs.pop(0)
+
+        logger.info(">>> Audio request received: %s %s from %s (UA: %s)", method, filename, client_ip, user_agent)
+
         try:
-            filename = request.match_info.get("filename", "")
             if not re.match(r"^sp_[A-Za-z0-9_\-]+\.mp3$", filename):
+                req_entry["status"] = "404_invalid_name"
                 return web.Response(status=404, text="Audio file not found")
 
             from bot.config import DOWNLOADS_DIR
             file_path = DOWNLOADS_DIR / filename
             if file_path.exists() and file_path.stat().st_size > 50000:
+                elapsed = round(time.time() - t_start, 3)
+                logger.info("Serving cached audio from disk in %ss: %s (%s bytes)", elapsed, filename, file_path.stat().st_size)
+                req_entry["status"] = f"200_cached_{elapsed}s"
                 return web.FileResponse(file_path)
 
             track_id = filename[3:-4]
+            logger.info("Audio not on disk, preparing on-the-fly: %s", track_id)
             from bot.services.spotify import (
                 get_cached_track_meta,
                 get_spotify_track_metadata,
@@ -265,21 +292,35 @@ async def start_healthcheck_server():
             if not meta:
                 try:
                     meta = await asyncio.to_thread(get_spotify_track_metadata, track_id)
-                except Exception:
+                except Exception as e:
+                    logger.warning("Error fetching track meta for %s: %s", track_id, e)
                     meta = None
 
             if not meta or not meta.title:
                 meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
 
             audio_path = await get_or_prepare_spotify_mp3(meta)
+            elapsed = round(time.time() - t_start, 2)
             if audio_path.exists() and audio_path.stat().st_size > 50000:
+                logger.info("Prepared and serving audio in %ss: %s (%s bytes)", elapsed, filename, audio_path.stat().st_size)
+                req_entry["status"] = f"200_prepared_{elapsed}s"
                 return web.FileResponse(audio_path)
-            return web.Response(status=500, text=f"File not ready or too small: {audio_path}")
+
+            req_entry["status"] = f"500_file_missing_or_small_{elapsed}s"
+            return web.Response(status=500, text=f"File not ready: {audio_path}")
         except Exception as e:
             import traceback
+            elapsed = round(time.time() - t_start, 2)
+            req_entry["status"] = f"500_exception_{e}"
             logger.exception("Error in handle_serve_audio: %s", e)
             return web.Response(status=500, text=f"Exception: {e}\n{traceback.format_exc()}")
 
+    async def handle_debug_audio_logs(request):
+        return web.json_response({
+            "ok": True,
+            "total_requests": len(_audio_request_logs),
+            "recent_requests": list(reversed(_audio_request_logs[-50:])),
+        })
 
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
@@ -290,6 +331,7 @@ async def start_healthcheck_server():
     app.router.add_get("/test-spot-search", handle_test_spot_search)
     app.router.add_get("/test-inline-audio", handle_test_inline_audio)
     app.router.add_get("/debug-yt", handle_debug_yt)
+    app.router.add_get("/debug-audio-logs", handle_debug_audio_logs)
     app.router.add_route("*", "/audio/{filename}", handle_serve_audio)
 
     runner = web.AppRunner(app)
