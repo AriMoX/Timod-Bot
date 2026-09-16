@@ -451,3 +451,128 @@ async def download_spotify(url: str) -> SpotifyTrack:
     return await asyncio.to_thread(_download_spotify_sync, url)
 
 
+# ---------------------------------------------------------------------------
+# Spotify Web API Catalog Search & Direct MP3 Serving
+# ---------------------------------------------------------------------------
+
+_spotify_token_cache = {
+    "token": None,
+    "expires_at": 0,
+}
+
+
+def _get_spotify_api_token() -> str | None:
+    """Get Spotify Web API access token via Client Credentials if configured."""
+    from bot.config import SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        return None
+
+    import time
+    now = time.time()
+    if _spotify_token_cache["token"] and _spotify_token_cache["expires_at"] > now + 60:
+        return _spotify_token_cache["token"]
+
+    import base64
+    auth_header = base64.b64encode(f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()).decode()
+    token_url = "https://accounts.spotify.com/api/token"
+    req = urllib.request.Request(
+        token_url,
+        data=b"grant_type=client_credentials",
+        headers={
+            "Authorization": f"Basic {auth_header}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Mozilla/5.0",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            token = data.get("access_token")
+            expires_in = data.get("expires_in") or 3600
+            if token:
+                _spotify_token_cache["token"] = token
+                _spotify_token_cache["expires_at"] = now + expires_in
+                return token
+    except Exception as e:
+        logger.warning("Failed to obtain Spotify access token: %s", e)
+    return None
+
+
+def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetadata]:
+    """Search Spotify tracks catalog."""
+    token = _get_spotify_api_token()
+    if token:
+        try:
+            import urllib.parse
+            s_url = f"https://api.spotify.com/v1/search?type=track&limit={limit}&q={urllib.parse.quote(query)}"
+            req = urllib.request.Request(
+                s_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": "Mozilla/5.0",
+                }
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                items = data.get("tracks", {}).get("items", [])
+                results = []
+                for t in items:
+                    if not t:
+                        continue
+                    t_id = t.get("id")
+                    title = t.get("name") or "Unknown"
+                    artists = " & ".join([a["name"] for a in t.get("artists", []) if a.get("name")])
+                    dur = int((t.get("duration_ms") or 0) / 1000)
+                    imgs = t.get("album", {}).get("images", [])
+                    cover = imgs[0].get("url") if imgs else None
+                    results.append(SpotifyTrackMetadata(
+                        title=title,
+                        artist=artists,
+                        duration=dur,
+                        cover_url=cover,
+                        track_id=t_id,
+                    ))
+                if results:
+                    return results
+        except Exception as e:
+            logger.warning("Spotify API search failed: %s", e)
+
+    # Resilient fallback: fast metadata search formatted as Spotify tracks
+    from bot.services.music_search import _search_music_sync
+    flat_results = _search_music_sync(query, limit=limit)
+    return [
+        SpotifyTrackMetadata(
+            title=r.title,
+            artist=r.artist,
+            duration=r.duration,
+            cover_url=r.thumbnail,
+            track_id=r.id,
+        )
+        for r in flat_results
+    ]
+
+
+async def search_spotify(query: str, limit: int = 10) -> list[SpotifyTrackMetadata]:
+    """Asynchronously search Spotify tracks."""
+    return await asyncio.to_thread(_search_spotify_sync, query, limit)
+
+
+def get_or_prepare_spotify_mp3_sync(meta: SpotifyTrackMetadata) -> Path:
+    """Ensure high-quality 320k MP3 file exists for the given track metadata."""
+    final_path = DOWNLOADS_DIR / f"sp_{meta.track_id}.mp3"
+    if final_path.exists() and final_path.stat().st_size > 50000:
+        return final_path
+
+    track = _download_spotify_track_meta_sync(meta)
+    if track.file_path.exists() and track.file_path != final_path:
+        import shutil
+        shutil.copy2(track.file_path, final_path)
+    return final_path
+
+
+async def get_or_prepare_spotify_mp3(meta: SpotifyTrackMetadata) -> Path:
+    """Asynchronously ensure high-quality 320k MP3 exists."""
+    return await asyncio.to_thread(get_or_prepare_spotify_mp3_sync, meta)
+
+
+

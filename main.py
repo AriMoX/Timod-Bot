@@ -208,6 +208,36 @@ async def start_healthcheck_server():
             return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
 
+    async def handle_serve_audio(request):
+        filename = request.match_info.get("filename", "")
+        if not re.match(r"^sp_[A-Za-z0-9_\-]+\.mp3$", filename):
+            return web.Response(status=404, text="Audio file not found")
+
+        from bot.config import DOWNLOADS_DIR
+        file_path = DOWNLOADS_DIR / filename
+        if file_path.exists() and file_path.stat().st_size > 50000:
+            return web.FileResponse(file_path)
+
+        track_id = filename[3:-4]
+        from bot.services.spotify import get_spotify_track_metadata, get_or_prepare_spotify_mp3, SpotifyTrackMetadata
+        try:
+            meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
+        except Exception:
+            meta = None
+
+        if not meta or not meta.title:
+            meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
+
+        try:
+            audio_path = await get_or_prepare_spotify_mp3(meta)
+            if audio_path.exists() and audio_path.stat().st_size > 50000:
+                return web.FileResponse(audio_path)
+        except Exception as err:
+            logger.error("Error generating inline audio for %s: %s", filename, err)
+
+        return web.Response(status=500, text="Failed to render audio")
+
+
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
     app.router.add_get("/version", handle_version)
@@ -216,6 +246,7 @@ async def start_healthcheck_server():
     app.router.add_get("/test-spotify-album", handle_test_spotify_album)
     app.router.add_get("/test-spot-search", handle_test_spot_search)
     app.router.add_get("/debug-yt", handle_debug_yt)
+    app.router.add_get("/audio/{filename}", handle_serve_audio)
 
     runner = web.AppRunner(app)
     await runner.setup()
