@@ -140,18 +140,13 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
     actual_duration = meta_duration
     last_error = None
 
-    # 2. Tier 1: YouTube Search with anti-block player clients
+    # 2. Tier 1: YouTube Search with Node.js JS solver
     yt_queries = [
         f"ytsearch1:{artist} - {title}",
         f"ytsearch1:{artist} {title} audio",
     ]
     yt_opts = {
         **base_opts,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["web_embedded", "web_safari", "android", "web"]
-            }
-        },
     }
 
     for q in yt_queries:
