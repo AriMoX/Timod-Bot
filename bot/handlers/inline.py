@@ -85,19 +85,15 @@ async def handle_inline_query(inline_query: InlineQuery):
         await inline_query.answer(results=[no_result], cache_time=5, is_personal=True)
         return
 
-    # 3. Pre-cache the top result in background for lightning-fast delivery
-    if tracks:
-        asyncio.create_task(get_or_prepare_spotify_mp3(tracks[0]))
+    # 3. Pre-cache top 3 results in background for lightning-fast delivery
+    for t in tracks[:3]:
+        asyncio.create_task(get_or_prepare_spotify_mp3(t))
 
-    # 4. Construct direct Audio Results (no article cards or redirect buttons!)
+    # 4. Construct direct Audio Results with NO caption (clean native player)
     results = []
     server_base = SERVER_PUBLIC_URL.rstrip("/")
 
     for track in tracks:
-        clean_title = html.escape(track.title)
-        clean_artist = html.escape(track.artist)
-        track_caption = f"🎵 <b>{clean_title}</b>\n👤 {clean_artist}\n\n🤖 @{bot_username}"
-
         cache_key = f"sp_{track.track_id}"
         cached = get_cached_audio(cache_key)
 
@@ -107,8 +103,7 @@ async def handle_inline_query(inline_query: InlineQuery):
                 InlineQueryResultCachedAudio(
                     id=cache_key,
                     audio_file_id=cached["file_id"],
-                    caption=track_caption,
-                    parse_mode="HTML",
+                    caption=None,
                 )
             )
         else:
@@ -122,8 +117,7 @@ async def handle_inline_query(inline_query: InlineQuery):
                     performer=track.artist,
                     audio_duration=track.duration if track.duration > 0 else None,
                     thumbnail_url=track.cover_url,
-                    caption=track_caption,
-                    parse_mode="HTML",
+                    caption=None,
                 )
             )
 

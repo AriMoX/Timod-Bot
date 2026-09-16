@@ -300,59 +300,76 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
     actual_duration = meta_duration
     all_errors = []
 
+    # Fast path 1: Direct YouTube ID if track_id starts with yt_
+    if track_id.startswith("yt_") and len(track_id) > 5:
+        yt_id = track_id[3:]
+        direct_url = f"https://www.youtube.com/watch?v={yt_id}"
+        logger.info("Fast path direct downloading YouTube track: %s", direct_url)
+        try:
+            with yt_dlp.YoutubeDL(base_opts) as yt_dl:
+                info = yt_dl.extract_info(direct_url, download=True)
+                cand_id = info.get("id") or yt_id
+                matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{cand_id}.*"))
+                if matches and matches[0].exists():
+                    raw_file_path = matches[0]
+                    actual_duration = int(info.get("duration") or meta_duration or 0)
+        except Exception as e:
+            all_errors.append(f"Direct YT download {yt_id}: {e}")
+
     queries = _generate_search_queries(artist, title)
     logger.info("Generated %s search queries for '%s - %s': %s", len(queries), artist, title, queries)
 
     # 2. Priority Tier 1: Smart SoundCloud search with multi-query variations & duration proximity
-    sc_search_opts = {
-        **base_opts,
-        "extract_flat": "in_playlist",
-    }
+    if not raw_file_path or not raw_file_path.exists():
+        sc_search_opts = {
+            **base_opts,
+            "extract_flat": "in_playlist",
+        }
 
-    for q in queries:
-        sc_query = f"scsearch5:{q}"
-        logger.info("Searching SoundCloud with query: %s", sc_query)
-        try:
-            with yt_dlp.YoutubeDL(sc_search_opts) as sc_ydl:
-                sc_info = sc_ydl.extract_info(sc_query, download=False)
-                candidates = sc_info.get("entries") or [sc_info]
+        for q in queries[:2]:
+            sc_query = f"scsearch2:{q}"
+            logger.info("Searching SoundCloud with query: %s", sc_query)
+            try:
+                with yt_dlp.YoutubeDL(sc_search_opts) as sc_ydl:
+                    sc_info = sc_ydl.extract_info(sc_query, download=False)
+                    candidates = sc_info.get("entries") or [sc_info]
 
-                valid_candidates = []
-                for entry in candidates:
-                    if not entry:
-                        continue
-                    c_dur = entry.get("duration") or 0
-                    if meta_duration > 60 and c_dur <= 35:
-                        continue
-                    valid_candidates.append(entry)
+                    valid_candidates = []
+                    for entry in candidates:
+                        if not entry:
+                            continue
+                        c_dur = entry.get("duration") or 0
+                        if meta_duration > 60 and c_dur <= 35:
+                            continue
+                        valid_candidates.append(entry)
 
-                if meta_duration > 0:
-                    valid_candidates.sort(key=lambda x: abs((x.get("duration") or 0) - meta_duration))
+                    if meta_duration > 0:
+                        valid_candidates.sort(key=lambda x: abs((x.get("duration") or 0) - meta_duration))
 
-                for entry in valid_candidates:
-                    c_dur = entry.get("duration") or 0
-                    cand_url = entry.get("webpage_url") or entry.get("url")
-                    if not cand_url:
-                        continue
-                    try:
-                        logger.info("Trying SoundCloud candidate: %s (%ss)", entry.get("title"), c_dur)
-                        with yt_dlp.YoutubeDL(base_opts) as sc_dl:
-                            sc_dl.extract_info(cand_url, download=True)
-                        cand_id = entry.get("id")
-                        matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{cand_id}.*"))
-                        if matches and matches[0].exists():
-                            raw_file_path = matches[0]
-                            actual_duration = int(c_dur or meta_duration or 0)
-                            logger.info("Downloaded SoundCloud candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
-                            break
-                    except Exception as cand_err:
-                        all_errors.append(f"SC candidate {entry.get('id')}: {cand_err}")
-                        continue
+                    for entry in valid_candidates:
+                        c_dur = entry.get("duration") or 0
+                        cand_url = entry.get("webpage_url") or entry.get("url")
+                        if not cand_url:
+                            continue
+                        try:
+                            logger.info("Trying SoundCloud candidate: %s (%ss)", entry.get("title"), c_dur)
+                            with yt_dlp.YoutubeDL(base_opts) as sc_dl:
+                                sc_dl.extract_info(cand_url, download=True)
+                            cand_id = entry.get("id")
+                            matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{cand_id}.*"))
+                            if matches and matches[0].exists():
+                                raw_file_path = matches[0]
+                                actual_duration = int(c_dur or meta_duration or 0)
+                                logger.info("Downloaded SoundCloud candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                                break
+                        except Exception as cand_err:
+                            all_errors.append(f"SC candidate {entry.get('id')}: {cand_err}")
+                            continue
 
-            if raw_file_path and raw_file_path.exists():
-                break
-        except Exception as sc_err:
-            all_errors.append(f"SC search '{q}': {sc_err}")
+                if raw_file_path and raw_file_path.exists():
+                    break
+            except Exception as sc_err:
+                all_errors.append(f"SC search '{q}': {sc_err}")
 
     # 3. Priority Tier 2: YouTube Search fallback
     if not raw_file_path or not raw_file_path.exists():
@@ -526,15 +543,19 @@ def _cache_track_meta(meta: SpotifyTrackMetadata):
 
 def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetadata]:
     """
-    Search music catalog with intelligent fallbacks:
+    Search music catalog with popularity ranking and intelligent fallback:
     1. Official Spotify Web API (if SPOTIFY_CLIENT_ID / SECRET configured)
-    2. Apple Music / iTunes Catalog API (direct studio metadata, 600x600 covers, free, unblocked)
-    3. Deezer API (direct studio catalog)
-    4. YouTube Music fallback
+    2. Deezer API with order=RANKING (Orders by artist popularity score, supports prefix/fuzzy matching)
+    3. YouTube Music AI search (_search_music_sync) - Essential for Persian queries and partial titles
+    4. Apple Music / iTunes Catalog
     """
     clean_q = query.strip()
     if not clean_q:
         return []
+
+    is_persian = any('\u0600' <= c <= '\u06FF' for c in clean_q)
+    results: list[SpotifyTrackMetadata] = []
+    seen = set()
 
     # Tier 1: Spotify Web API via Client Credentials
     token = _get_spotify_api_token()
@@ -552,107 +573,122 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 items = data.get("tracks", {}).get("items", [])
-                results = []
                 for t in items:
                     if not t:
                         continue
                     t_id = t.get("id")
-                    title = t.get("name") or "Unknown"
+                    title = _clean_title(t.get("name") or "Unknown")
                     artists = " & ".join([a["name"] for a in t.get("artists", []) if a.get("name")])
                     dur = int((t.get("duration_ms") or 0) / 1000)
                     imgs = t.get("album", {}).get("images", [])
                     cover = imgs[0].get("url") if imgs else None
-                    m = SpotifyTrackMetadata(
-                        title=title,
-                        artist=artists,
-                        duration=dur,
-                        cover_url=cover,
-                        track_id=t_id,
-                    )
-                    results.append(m)
-                    _cache_track_meta(m)
+                    dedup_key = (title.lower(), artists.lower())
+                    if dedup_key not in seen:
+                        seen.add(dedup_key)
+                        m = SpotifyTrackMetadata(
+                            title=title,
+                            artist=artists,
+                            duration=dur,
+                            cover_url=cover,
+                            track_id=t_id,
+                        )
+                        results.append(m)
+                        _cache_track_meta(m)
                 if results:
-                    return results
+                    return results[:limit]
         except Exception as e:
             logger.warning("Spotify API search failed: %s", e)
 
-    # Tier 2: Apple Music / iTunes Store Catalog (clean studio metadata, 600x600 covers)
-    try:
-        import urllib.parse
-        itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(clean_q)}&entity=song&limit={limit}"
-        it_req = urllib.request.Request(itunes_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(it_req, timeout=6) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            results = []
-            for item in data.get("results", []):
-                t_name = item.get("trackName")
-                a_name = item.get("artistName")
-                if not t_name:
-                    continue
-                raw_art = item.get("artworkUrl100") or ""
-                cover_url = raw_art.replace("100x100bb", "600x600bb") if raw_art else None
-                dur = int((item.get("trackTimeMillis") or 0) / 1000)
-                t_id = f"it_{item.get('trackId')}"
-                m = SpotifyTrackMetadata(
-                    title=t_name,
-                    artist=a_name or "Artist",
-                    duration=dur,
-                    cover_url=cover_url,
-                    track_id=t_id,
-                )
-                results.append(m)
-                _cache_track_meta(m)
-            if results:
-                return results
-    except Exception as ie:
-        logger.warning("iTunes search fallback failed: %s", ie)
+    # Tier 2: Deezer with order=RANKING (Orders by artist's most popular tracks!)
+    if not is_persian:
+        try:
+            import urllib.parse
+            deezer_url = f"https://api.deezer.com/search?q={urllib.parse.quote(clean_q)}&order=RANKING&limit=15"
+            dz_req = urllib.request.Request(deezer_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(dz_req, timeout=6) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                items = data.get("data", [])
+                items.sort(key=lambda x: x.get("rank") or 0, reverse=True)
+                for item in items:
+                    t_name = _clean_title(item.get("title") or "")
+                    a_name = item.get("artist", {}).get("name") or "Artist"
+                    if not t_name:
+                        continue
+                    album = item.get("album", {})
+                    cover_url = album.get("cover_big") or album.get("cover_medium")
+                    dur = item.get("duration") or 0
+                    t_id = f"dz_{item.get('id')}"
+                    dedup_key = (t_name.lower(), a_name.lower())
+                    if dedup_key not in seen:
+                        seen.add(dedup_key)
+                        m = SpotifyTrackMetadata(
+                            title=t_name,
+                            artist=a_name,
+                            duration=dur,
+                            cover_url=cover_url,
+                            track_id=t_id,
+                        )
+                        results.append(m)
+                        _cache_track_meta(m)
+        except Exception as de:
+            logger.warning("Deezer ranking search failed: %s", de)
 
-    # Tier 3: Deezer Studio Catalog
-    try:
-        import urllib.parse
-        deezer_url = f"https://api.deezer.com/search?q={urllib.parse.quote(clean_q)}&limit={limit}"
-        dz_req = urllib.request.Request(deezer_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(dz_req, timeout=6) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            results = []
-            for item in data.get("data", []):
-                t_name = item.get("title")
-                a_name = item.get("artist", {}).get("name")
-                if not t_name:
-                    continue
-                album = item.get("album", {})
-                cover_url = album.get("cover_big") or album.get("cover_medium")
-                dur = item.get("duration") or 0
-                t_id = f"dz_{item.get('id')}"
-                m = SpotifyTrackMetadata(
-                    title=t_name,
-                    artist=a_name or "Artist",
-                    duration=dur,
-                    cover_url=cover_url,
-                    track_id=t_id,
-                )
-                results.append(m)
-                _cache_track_meta(m)
-            if results:
-                return results
-    except Exception as de:
-        logger.warning("Deezer search fallback failed: %s", de)
+    # Tier 3: YouTube Music Search (_search_music_sync)
+    # Crucial for Persian queries and partial song titles!
+    if is_persian or len(results) < 3:
+        try:
+            from bot.services.music_search import _search_music_sync
+            flat_results = _search_music_sync(clean_q, limit=limit)
+            for r in flat_results:
+                clean_t = _clean_title(r.title)
+                dedup_key = (clean_t.lower(), r.artist.lower())
+                if dedup_key not in seen:
+                    seen.add(dedup_key)
+                    m = SpotifyTrackMetadata(
+                        title=clean_t,
+                        artist=r.artist,
+                        duration=r.duration,
+                        cover_url=r.thumbnail,
+                        track_id=f"yt_{r.id}",
+                    )
+                    results.append(m)
+                    _cache_track_meta(m)
+        except Exception as fe:
+            logger.warning("YouTube search fallback failed: %s", fe)
 
-    # Tier 4: Fast music search fallback
-    from bot.services.music_search import _search_music_sync
-    flat_results = _search_music_sync(clean_q, limit=limit)
-    results = []
-    for r in flat_results:
-        m = SpotifyTrackMetadata(
-            title=r.title,
-            artist=r.artist,
-            duration=r.duration,
-            cover_url=r.thumbnail,
-            track_id=f"yt_{r.id}",
-        )
-        results.append(m)
-        _cache_track_meta(m)
-    return results
+    # Tier 4: iTunes Store Catalog Fallback
+    if len(results) < 3:
+        try:
+            import urllib.parse
+            itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(clean_q)}&entity=song&limit={limit}"
+            it_req = urllib.request.Request(itunes_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(it_req, timeout=6) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for item in data.get("results", []):
+                    t_name = _clean_title(item.get("trackName") or "")
+                    a_name = item.get("artistName") or "Artist"
+                    if not t_name:
+                        continue
+                    raw_art = item.get("artworkUrl100") or ""
+                    cover_url = raw_art.replace("100x100bb", "600x600bb") if raw_art else None
+                    dur = int((item.get("trackTimeMillis") or 0) / 1000)
+                    t_id = f"it_{item.get('trackId')}"
+                    dedup_key = (t_name.lower(), a_name.lower())
+                    if dedup_key not in seen:
+                        seen.add(dedup_key)
+                        m = SpotifyTrackMetadata(
+                            title=t_name,
+                            artist=a_name,
+                            duration=dur,
+                            cover_url=cover_url,
+                            track_id=t_id,
+                        )
+                        results.append(m)
+                        _cache_track_meta(m)
+        except Exception as ie:
+            logger.warning("iTunes search fallback failed: %s", ie)
+
+    return results[:limit]
 
 
 async def search_spotify(query: str, limit: int = 10) -> list[SpotifyTrackMetadata]:
