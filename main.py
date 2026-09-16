@@ -243,52 +243,41 @@ async def start_healthcheck_server():
 
 
     async def handle_serve_audio(request):
-        filename = request.match_info.get("filename", "")
-        if not re.match(r"^sp_[A-Za-z0-9_\-]+\.mp3$", filename):
-            return web.Response(status=404, text="Audio file not found")
-
-        from bot.config import DOWNLOADS_DIR
-        file_path = DOWNLOADS_DIR / filename
-        if file_path.exists() and file_path.stat().st_size > 50000:
-            return web.FileResponse(
-                file_path,
-                headers={
-                    "Accept-Ranges": "bytes",
-                    "Content-Type": "audio/mpeg",
-                }
-            )
-
-        track_id = filename[3:-4]
-        from bot.services.spotify import (
-            get_cached_track_meta,
-            get_spotify_track_metadata,
-            get_or_prepare_spotify_mp3,
-            SpotifyTrackMetadata,
-        )
-        meta = get_cached_track_meta(track_id)
-        if not meta:
-            try:
-                meta = await asyncio.to_thread(get_spotify_track_metadata, track_id)
-            except Exception:
-                meta = None
-
-        if not meta or not meta.title:
-            meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
-
         try:
+            filename = request.match_info.get("filename", "")
+            if not re.match(r"^sp_[A-Za-z0-9_\-]+\.mp3$", filename):
+                return web.Response(status=404, text="Audio file not found")
+
+            from bot.config import DOWNLOADS_DIR
+            file_path = DOWNLOADS_DIR / filename
+            if file_path.exists() and file_path.stat().st_size > 50000:
+                return web.FileResponse(file_path)
+
+            track_id = filename[3:-4]
+            from bot.services.spotify import (
+                get_cached_track_meta,
+                get_spotify_track_metadata,
+                get_or_prepare_spotify_mp3,
+                SpotifyTrackMetadata,
+            )
+            meta = get_cached_track_meta(track_id)
+            if not meta:
+                try:
+                    meta = await asyncio.to_thread(get_spotify_track_metadata, track_id)
+                except Exception:
+                    meta = None
+
+            if not meta or not meta.title:
+                meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
+
             audio_path = await get_or_prepare_spotify_mp3(meta)
             if audio_path.exists() and audio_path.stat().st_size > 50000:
-                return web.FileResponse(
-                    audio_path,
-                    headers={
-                        "Accept-Ranges": "bytes",
-                        "Content-Type": "audio/mpeg",
-                    }
-                )
-            return web.Response(status=500, text=f"File exists={audio_path.exists()}, size={audio_path.stat().st_size if audio_path.exists() else 0}")
-        except Exception as err:
-            logger.error("Error generating inline audio for %s: %s", filename, err)
-            return web.Response(status=500, text=f"Failed to render audio: {err}")
+                return web.FileResponse(audio_path)
+            return web.Response(status=500, text=f"File not ready or too small: {audio_path}")
+        except Exception as e:
+            import traceback
+            logger.exception("Error in handle_serve_audio: %s", e)
+            return web.Response(status=500, text=f"Exception: {e}\n{traceback.format_exc()}")
 
 
     app.router.add_get("/", handle_ping)
