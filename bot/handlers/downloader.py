@@ -1,3 +1,4 @@
+import asyncio
 import re
 import html
 import logging
@@ -11,7 +12,12 @@ from bot.services.instagram import download_instagram, InstagramLoginRequiredErr
 from bot.services.youtube import download_youtube, YouTubeBotDetectionError
 from bot.services.tiktok import download_tiktok
 from bot.services.pinterest import download_pinterest
-from bot.services.spotify import download_spotify
+from bot.services.spotify import (
+    download_spotify,
+    get_spotify_album,
+    download_spotify_track_meta,
+    resolve_spotify_url,
+)
 from bot.services.cache import get_cached_audio, save_cached_audio
 from bot.utils.cleanup import safe_remove
 
@@ -146,6 +152,122 @@ async def handle_twitter(message: Message):
             safe_remove(video_path)
 
 
+async def handle_spotify_album(message: Message, url: str):
+    status_msg = await message.reply("⏳ در حال دریافت لیست ترک‌های آلبوم / پلی‌لیست از اسپاتیفای...")
+    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+
+    try:
+        album = await get_spotify_album(url)
+        if not album or not album.tracks:
+            await status_msg.edit_text("❌ متأسفانه هیچ قطعه‌ای در این آلبوم یا پلی‌لیست یافت نشد.")
+            return
+
+        total_tracks = len(album.tracks)
+        limit = min(total_tracks, 25)
+        is_playlist = album.is_playlist
+        type_str = "پلی‌لیست" if is_playlist else "آلبوم"
+
+        album_title_esc = html.escape(album.name)
+        artist_esc = html.escape(_format_artists(album.artist))
+
+        await status_msg.edit_text(
+            f"🎶 <b>{album_title_esc}</b>\n"
+            f"👤 <b>هنرمند:</b> {artist_esc}\n"
+            f"📦 <b>تعداد کل ترک‌ها:</b> {total_tracks} قطعه\n\n"
+            f"⏳ در حال دانلود و ارسال {limit} ترک اول (لطفاً صبور باشید)...",
+            parse_mode="HTML",
+        )
+
+        success_count = 0
+        for idx, track_meta in enumerate(album.tracks[:limit], start=1):
+            track_id = track_meta.track_id
+            cache_key = f"spot_{track_id}" if track_id else None
+            artist_formatted = _format_artists(track_meta.artist or album.artist)
+            title_esc = html.escape(str(track_meta.title))
+            t_artist_esc = html.escape(str(artist_formatted))
+            caption = (
+                f"🎵 <b>{title_esc}</b>\n"
+                f"👤 <b>هنرمند:</b> {t_artist_esc}\n"
+                f"⚡ <b>کیفیت:</b> 320kbps (Original HQ)\n"
+                f"💿 <b>{type_str}:</b> {album_title_esc} ({idx}/{limit})\n\n"
+                f"🤖 دانلود شده از اسپاتیفای"
+            )
+
+            # 1. Fast Cache Check
+            if cache_key:
+                cached = get_cached_audio(cache_key)
+                if cached and cached.get("file_id"):
+                    try:
+                        await message.reply_audio(
+                            audio=cached["file_id"],
+                            title=track_meta.title,
+                            performer=artist_formatted,
+                            duration=cached.get("duration") or track_meta.duration,
+                            caption=caption,
+                            parse_mode="HTML",
+                        )
+                        success_count += 1
+                        await asyncio.sleep(1.2)
+                        continue
+                    except Exception as ce:
+                        logger.warning("Failed sending cached audio for %s: %s", track_meta.title, ce)
+
+            # 2. Download and send
+            track_path = None
+            thumb_path = None
+            try:
+                track = await download_spotify_track_meta(track_meta, fallback_cover=album.cover_url)
+                track_path = track.file_path
+                thumb_path = track.thumbnail_path
+
+                audio_file = FSInputFile(track.file_path)
+                thumb_file = FSInputFile(track.thumbnail_path) if track.thumbnail_path and track.thumbnail_path.exists() else None
+
+                sent_msg = await message.reply_audio(
+                    audio=audio_file,
+                    title=track.title,
+                    performer=artist_formatted,
+                    duration=track.duration,
+                    thumbnail=thumb_file,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+                success_count += 1
+
+                if sent_msg and sent_msg.audio and cache_key:
+                    save_cached_audio(
+                        track_id=cache_key,
+                        file_id=sent_msg.audio.file_id,
+                        title=track.title,
+                        artist=artist_formatted,
+                        duration=track.duration,
+                    )
+                await asyncio.sleep(1.5)
+            except Exception as te:
+                logger.warning("Failed downloading track %s from album: %s", track_meta.title, te)
+            finally:
+                safe_remove(track_path, thumb_path)
+
+        if success_count > 0:
+            await status_msg.edit_text(
+                f"✅ <b>دانلود {type_str} به پایان رسید!</b>\n\n"
+                f"🎶 <b>{album_title_esc}</b>\n"
+                f"📊 <b>{success_count}</b> از <b>{limit}</b> ترک با موفقیت ارسال شد.",
+                parse_mode="HTML",
+            )
+        else:
+            await status_msg.edit_text(
+                f"❌ متأسفانه امکان دانلود ترک‌های این {type_str} وجود نداشت.",
+                parse_mode="HTML",
+            )
+
+    except Exception as e:
+        logger.exception("Error processing Spotify album URL: %s", url)
+        await status_msg.edit_text(
+            "❌ متأسفانه در پردازش این آلبوم یا پلی‌لیست اسپاتیفای خطایی رخ داد."
+        )
+
+
 @router.message(F.text.regexp(SPOTIFY_REGEX))
 async def handle_spotify(message: Message):
     match = SPOTIFY_REGEX.search(message.text or "")
@@ -153,9 +275,15 @@ async def handle_spotify(message: Message):
         return
 
     url = match.group(0)
+    resolved_url = resolve_spotify_url(url)
+
+    # Handle Album or Playlist
+    if "/album/" in resolved_url or "/playlist/" in resolved_url:
+        await handle_spotify_album(message, resolved_url)
+        return
 
     # 1. Fast Cache Check: If already downloaded previously, send instantly (0.1s)
-    track_id_match = re.search(r"/track/([A-Za-z0-9]+)", url)
+    track_id_match = re.search(r"/track/([A-Za-z0-9]+)", resolved_url)
     cache_key = f"spot_{track_id_match.group(1)}" if track_id_match else None
 
     if cache_key:
@@ -185,7 +313,7 @@ async def handle_spotify(message: Message):
     track_path = None
     thumb_path = None
     try:
-        track = await download_spotify(url)
+        track = await download_spotify(resolved_url)
         track_path = track.file_path
         thumb_path = track.thumbnail_path
 

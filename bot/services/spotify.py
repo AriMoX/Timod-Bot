@@ -25,6 +25,25 @@ class SpotifyTrack:
     track_id: str = "track"
 
 
+@dataclass
+class SpotifyTrackMetadata:
+    title: str
+    artist: str
+    duration: int
+    cover_url: str | None
+    track_id: str
+
+
+@dataclass
+class SpotifyAlbum:
+    name: str
+    artist: str
+    cover_url: str | None
+    tracks: list[SpotifyTrackMetadata]
+    album_id: str
+    is_playlist: bool = False
+
+
 def resolve_spotify_url(url: str) -> str:
     """Resolve redirects for short spotify.link or share links."""
     if "spotify.link" in url or "/intl-" in url:
@@ -42,10 +61,64 @@ def resolve_spotify_url(url: str) -> str:
     return url
 
 
-def _get_spotify_metadata(url: str) -> tuple[str, str, int, str | None, str]:
+def _clean_title(title: str) -> str:
+    """Removes video/audio tags and feat brackets from song title for cleaner search matching."""
+    cleaned = re.sub(
+        r"\s*[\(\[](?:official|audio|video|lyrics|hd|4k|remastered|explicit)[\)\]]",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+    cleaned = re.sub(
+        r"\s*[\(\[](?:feat|ft)\.?\s+[^)\]]+[\)\]]",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned or title
+
+
+def _generate_search_queries(artist: str, title: str) -> list[str]:
+    """Generates clean, prioritized search queries to maximize match rate on music platforms."""
+    clean_t = _clean_title(title)
+
+    # Extract primary artist (first name before &, comma, feat, ft)
+    primary_artist = re.split(r"[,&]|\bfeat\b|\bft\b", artist, flags=re.IGNORECASE)[0].strip()
+
+    # Clean all artists (replace & and comma with space)
+    clean_all_artists = re.sub(r"[,&]|\bfeat\b|\bft\b", " ", artist).strip()
+    clean_all_artists = re.sub(r"\s+", " ", clean_all_artists)
+
+    queries = []
+    # 1. Primary artist + clean title (Highest accuracy on SoundCloud / YouTube)
+    if primary_artist:
+        queries.append(f"{primary_artist} {clean_t}")
+        queries.append(f"{clean_t} {primary_artist}")
+
+    # 2. All artists + clean title
+    if clean_all_artists and clean_all_artists.lower() != primary_artist.lower():
+        queries.append(f"{clean_all_artists} {clean_t}")
+
+    # 3. Clean title alone
+    if clean_t:
+        queries.append(clean_t)
+
+    # Deduplicate while preserving order
+    seen = set()
+    deduped = []
+    for q in queries:
+        q_norm = q.lower().strip()
+        if q_norm and q_norm not in seen:
+            seen.add(q_norm)
+            deduped.append(q)
+
+    return deduped
+
+
+def _get_spotify_metadata(url: str) -> SpotifyTrackMetadata:
     """
-    Extracts title, artist, duration (seconds), cover art URL, and unique track ID from Spotify.
-    Uses ultra-fast Spotify embed metadata with oEmbed fallback and picks the largest resolution cover.
+    Extracts title, artist, duration (seconds), cover art URL, and unique track ID from Spotify track URL.
+    Uses ultra-fast Spotify embed metadata with oEmbed fallback.
     """
     clean_url = resolve_spotify_url(url)
     track_id_match = re.search(r"/track/([A-Za-z0-9]+)", clean_url)
@@ -59,7 +132,7 @@ def _get_spotify_metadata(url: str) -> tuple[str, str, int, str | None, str]:
     # 1. Primary: Ultra-lightweight Spotify embed page (~10KB JSON)
     try:
         embed_url = f"https://open.spotify.com/embed/track/{track_id}"
-        req = urllib.request.Request(embed_url, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(embed_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
         with urllib.request.urlopen(req, timeout=6) as resp:
             html = resp.read().decode("utf-8")
         m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
@@ -78,21 +151,20 @@ def _get_spotify_metadata(url: str) -> tuple[str, str, int, str | None, str]:
             if visual and "image" in visual:
                 imgs = visual["image"]
                 if imgs:
-                    # Pick the largest image resolution available (640x640)
                     best_img = sorted(
                         imgs,
                         key=lambda x: (x.get("maxWidth") or 0) * (x.get("maxHeight") or 0),
                         reverse=True
                     )[0]
                     cover_url = best_img.get("url")
-            return title, artist, duration, cover_url, track_id
+            return SpotifyTrackMetadata(title=title, artist=artist, duration=duration, cover_url=cover_url, track_id=track_id)
     except Exception as e:
-        logger.warning("Failed to fetch Spotify embed metadata: %s", e)
+        logger.warning("Failed to fetch Spotify track embed metadata: %s", e)
 
     # 2. Fallback: Spotify oEmbed endpoint
     try:
         oembed_url = f"https://open.spotify.com/oembed?url={clean_url}"
-        req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
         with urllib.request.urlopen(req, timeout=6) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("title"):
@@ -102,15 +174,95 @@ def _get_spotify_metadata(url: str) -> tuple[str, str, int, str | None, str]:
     except Exception as e:
         logger.warning("Failed to fetch Spotify oEmbed: %s", e)
 
-    return title, artist, duration, cover_url, track_id
+    return SpotifyTrackMetadata(title=title, artist=artist, duration=duration, cover_url=cover_url, track_id=track_id)
 
 
-def _download_spotify_sync(url: str) -> SpotifyTrack:
-    """Download matching audio and package with crystal clear 320kbps audio and HD artwork."""
-    title, artist, meta_duration, cover_url, track_id = _get_spotify_metadata(url)
+def _get_spotify_album_sync(url: str) -> SpotifyAlbum:
+    """Synchronously extract album or playlist metadata and all tracks from Spotify embed page."""
+    clean_url = resolve_spotify_url(url)
+    m = re.search(r"/(album|playlist)/([A-Za-z0-9]+)", clean_url)
+    if not m:
+        raise ValueError("لینک وارد شده مربوط به آلبوم یا پلی‌لیست معتبر اسپاتیفای نیست.")
+
+    entity_type = m.group(1)
+    entity_id = m.group(2)
+    is_playlist = entity_type == "playlist"
+
+    embed_url = f"https://open.spotify.com/embed/{entity_type}/{entity_id}"
+    req = urllib.request.Request(embed_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        html = resp.read().decode("utf-8")
+
+    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
+    if not match:
+        raise ValueError("اطلاعات آلبوم در صفحه اسپاتیفای یافت نشد.")
+
+    data = json.loads(match.group(1))
+    entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+
+    album_name = entity.get("name") or ("پلی‌لیست اسپاتیفای" if is_playlist else "آلبوم اسپاتیفای")
+    album_artist = entity.get("subtitle") or "Various Artists"
+
+    # Cover image
+    cover_url = None
+    visual = entity.get("visualIdentity", {})
+    if visual and "image" in visual:
+        imgs = visual["image"]
+        if imgs:
+            best_img = sorted(
+                imgs,
+                key=lambda x: (x.get("maxWidth") or 0) * (x.get("maxHeight") or 0),
+                reverse=True
+            )[0]
+            cover_url = best_img.get("url")
+
+    # Track list
+    raw_tracks = entity.get("trackList", [])
+    tracks: list[SpotifyTrackMetadata] = []
+    for item in raw_tracks:
+        if not item:
+            continue
+        t_uri = item.get("uri") or ""
+        t_id = t_uri.split(":")[-1] if ":" in t_uri else f"track_{len(tracks)}"
+        t_title = item.get("title") or "Unknown Track"
+        t_artist = item.get("subtitle") or album_artist
+        t_duration = int((item.get("duration") or 0) / 1000)
+
+        tracks.append(
+            SpotifyTrackMetadata(
+                title=t_title,
+                artist=t_artist,
+                duration=t_duration,
+                cover_url=cover_url,
+                track_id=t_id,
+            )
+        )
+
+    return SpotifyAlbum(
+        name=album_name,
+        artist=album_artist,
+        cover_url=cover_url,
+        tracks=tracks,
+        album_id=entity_id,
+        is_playlist=is_playlist,
+    )
+
+
+async def get_spotify_album(url: str) -> SpotifyAlbum:
+    """Asynchronously retrieve Spotify album / playlist metadata."""
+    return await asyncio.to_thread(_get_spotify_album_sync, url)
+
+
+def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover: str | None = None) -> SpotifyTrack:
+    """Synchronously download and encode a track based on its metadata."""
+    title = meta.title
+    artist = meta.artist
+    meta_duration = meta.duration
+    cover_url = meta.cover_url or fallback_cover
+    track_id = meta.track_id
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
-    # 1. Download highest-resolution cover art thumbnail (640x640)
+    # 1. Download cover art thumbnail
     thumb_path = None
     if cover_url:
         try:
@@ -118,7 +270,7 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
             img_req = urllib.request.Request(cover_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(img_req, timeout=8) as img_resp:
                 thumb_path.write_bytes(img_resp.read())
-            logger.info("Downloaded Spotify HD cover: %s (%s bytes)", thumb_path.name, thumb_path.stat().st_size)
+            logger.info("Downloaded Spotify cover: %s (%s bytes)", thumb_path.name, thumb_path.stat().st_size)
         except Exception as e:
             logger.warning("Failed to download Spotify cover thumbnail: %s", e)
             thumb_path = None
@@ -140,62 +292,40 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
     actual_duration = meta_duration
     all_errors = []
 
-    # 2. Tier 1: Fast YouTube Search with Node.js JS solver (8s max)
-    yt_query = f"ytsearch1:{artist} - {title}"
-    logger.info("Searching YouTube for Spotify track: %s", yt_query)
-    try:
-        with yt_dlp.YoutubeDL(base_opts) as yt_ydl:
-            info = yt_ydl.extract_info(yt_query, download=True)
-            if info:
-                entries = info.get("entries") or [info]
-                for entry in entries:
-                    if not entry:
-                        continue
-                    item_id = entry.get("id")
-                    c_dur = entry.get("duration") or 0
-                    matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{item_id}.*"))
-                    if matches and matches[0].exists():
-                        raw_file_path = matches[0]
-                        actual_duration = int(c_dur or meta_duration or 0)
-                        logger.info("Found YouTube audio candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
-                        break
-    except Exception as yt_err:
-        logger.warning("YouTube query failed: %s", yt_err)
-        all_errors.append(f"YouTube: {yt_err}")
+    queries = _generate_search_queries(artist, title)
+    logger.info("Generated %s search queries for '%s - %s': %s", len(queries), artist, title, queries)
 
-    # 3. Tier 2: Smart SoundCloud Search with DRM preview skip & duration proximity
-    if not raw_file_path or not raw_file_path.exists():
-        sc_query = f"scsearch5:{artist} {title}"
-        logger.info("Falling back to SoundCloud search: %s", sc_query)
-        sc_search_opts = {
-            **base_opts,
-            "extract_flat": "in_playlist",
-        }
+    # 2. Priority Tier 1: Smart SoundCloud search with multi-query variations & duration proximity
+    sc_search_opts = {
+        **base_opts,
+        "extract_flat": "in_playlist",
+    }
+
+    for q in queries:
+        sc_query = f"scsearch5:{q}"
+        logger.info("Searching SoundCloud with query: %s", sc_query)
         try:
             with yt_dlp.YoutubeDL(sc_search_opts) as sc_ydl:
                 sc_info = sc_ydl.extract_info(sc_query, download=False)
                 candidates = sc_info.get("entries") or [sc_info]
 
-                # Filter out short 30s previews (SoundCloud Go+ DRM snippets)
                 valid_candidates = []
                 for entry in candidates:
                     if not entry:
                         continue
                     c_dur = entry.get("duration") or 0
                     if meta_duration > 60 and c_dur <= 35:
-                        logger.info("Skipping short SoundCloud DRM preview (%ss) for %s", c_dur, entry.get("id"))
                         continue
                     valid_candidates.append(entry)
 
-                # Prioritize candidate closest in duration to the Spotify original track
                 if meta_duration > 0:
                     valid_candidates.sort(key=lambda x: abs((x.get("duration") or 0) - meta_duration))
 
                 for entry in valid_candidates:
+                    c_dur = entry.get("duration") or 0
                     cand_url = entry.get("webpage_url") or entry.get("url")
                     if not cand_url:
                         continue
-                    c_dur = entry.get("duration") or 0
                     try:
                         logger.info("Trying SoundCloud candidate: %s (%ss)", entry.get("title"), c_dur)
                         with yt_dlp.YoutubeDL(base_opts) as sc_dl:
@@ -208,12 +338,43 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
                             logger.info("Downloaded SoundCloud candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
                             break
                     except Exception as cand_err:
-                        logger.warning("SoundCloud candidate failed (%s), trying next", cand_err)
                         all_errors.append(f"SC candidate {entry.get('id')}: {cand_err}")
                         continue
+
+            if raw_file_path and raw_file_path.exists():
+                break
         except Exception as sc_err:
-            logger.warning("SoundCloud search '%s' failed: %s", sc_query, sc_err)
-            all_errors.append(f"SoundCloud search: {sc_err}")
+            all_errors.append(f"SC search '{q}': {sc_err}")
+
+    # 3. Priority Tier 2: YouTube Search fallback
+    if not raw_file_path or not raw_file_path.exists():
+        yt_queries = [f"ytsearch1:{artist} - {title}"]
+        primary_artist = re.split(r"[,&]|\bfeat\b|\bft\b", artist)[0].strip()
+        if primary_artist and primary_artist != artist:
+            yt_queries.append(f"ytsearch1:{primary_artist} - {title}")
+
+        for yt_q in yt_queries:
+            logger.info("Searching YouTube for Spotify track fallback: %s", yt_q)
+            try:
+                with yt_dlp.YoutubeDL(base_opts) as yt_ydl:
+                    info = yt_ydl.extract_info(yt_q, download=True)
+                    if info:
+                        entries = info.get("entries") or [info]
+                        for entry in entries:
+                            if not entry:
+                                continue
+                            item_id = entry.get("id")
+                            c_dur = entry.get("duration") or 0
+                            matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{item_id}.*"))
+                            if matches and matches[0].exists():
+                                raw_file_path = matches[0]
+                                actual_duration = int(c_dur or meta_duration or 0)
+                                logger.info("Found YouTube audio candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                                break
+                if raw_file_path and raw_file_path.exists():
+                    break
+            except Exception as yt_err:
+                all_errors.append(f"YouTube query '{yt_q}': {yt_err}")
 
     if not raw_file_path or not raw_file_path.exists():
         err_msg = " | ".join(all_errors)
@@ -259,7 +420,7 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
         )
         safe_remove(raw_file_path)
         output_file = final_audio_path
-        logger.info("High quality 320kbps MP3 produced with embedded cover: %s (%s bytes)", output_file.name, output_file.stat().st_size)
+        logger.info("Produced 320kbps MP3 with embedded cover: %s (%s bytes)", output_file.name, output_file.stat().st_size)
     except Exception as conv_err:
         logger.warning("FFmpeg 320k conversion failed (%s), using raw audio file", conv_err)
         output_file = raw_file_path
@@ -274,7 +435,19 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
     )
 
 
+async def download_spotify_track_meta(meta: SpotifyTrackMetadata, fallback_cover: str | None = None) -> SpotifyTrack:
+    """Asynchronously download track using its metadata."""
+    return await asyncio.to_thread(_download_spotify_track_meta_sync, meta, fallback_cover)
+
+
+def _download_spotify_sync(url: str) -> SpotifyTrack:
+    """Download single Spotify track."""
+    meta = _get_spotify_metadata(url)
+    return _download_spotify_track_meta_sync(meta)
+
+
 async def download_spotify(url: str) -> SpotifyTrack:
     """Asynchronously download Spotify track in a worker thread."""
     return await asyncio.to_thread(_download_spotify_sync, url)
+
 

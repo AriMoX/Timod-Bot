@@ -97,6 +97,23 @@ async def start_healthcheck_server():
                 "trace": traceback.format_exc(),
             })
 
+    async def handle_test_spotify_album(request):
+        album_url = request.query.get("url", "https://open.spotify.com/album/4m2880jivSbbyEGAKfITCa")
+        from bot.services.spotify import get_spotify_album
+        try:
+            album = await get_spotify_album(album_url)
+            return web.json_response({
+                "ok": True,
+                "name": album.name,
+                "artist": album.artist,
+                "is_playlist": album.is_playlist,
+                "total_tracks": len(album.tracks),
+                "tracks_sample": [{"title": t.title, "artist": t.artist, "duration": t.duration} for t in album.tracks[:5]],
+            })
+        except Exception as err:
+            import traceback
+            return web.json_response({"ok": False, "error": str(err), "trace": traceback.format_exc()})
+
     async def handle_debug_yt(request):
         v_url = request.query.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
         try:
@@ -127,6 +144,7 @@ async def start_healthcheck_server():
     app.router.add_get("/version", handle_version)
     app.router.add_get("/test-pin", handle_test_pin)
     app.router.add_get("/test-spotify", handle_test_spotify)
+    app.router.add_get("/test-spotify-album", handle_test_spotify_album)
     app.router.add_get("/debug-yt", handle_debug_yt)
 
     runner = web.AppRunner(app)
