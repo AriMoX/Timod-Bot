@@ -116,19 +116,28 @@ async def start_healthcheck_server():
 
     async def handle_debug_yt(request):
         v_url = request.query.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        import yt_dlp
+        from bot.services.youtube import _prepare_youtube_cookie_file
+        cookie_file = _prepare_youtube_cookie_file()
+        opts = {
+            "quiet": True,
+            "cookiefile": cookie_file,
+        }
         try:
-            from bot.services.youtube import download_youtube
-            from bot.utils.cleanup import safe_remove
-            vid = await download_youtube(v_url)
-            size = vid.file_path.stat().st_size if vid.file_path.exists() else 0
-            safe_remove(vid.file_path)
-            return web.json_response({
-                "ok": True,
-                "title": vid.title,
-                "uploader": vid.uploader,
-                "duration": vid.duration,
-                "file_size": size,
-            })
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(v_url, download=False)
+                formats = info.get("formats", [])
+                fmt_summary = [
+                    f"{f.get('format_id')}: {f.get('ext')} {f.get('resolution')} v={f.get('vcodec')[:6] if f.get('vcodec') else None} a={f.get('acodec')[:6] if f.get('acodec') else None}"
+                    for f in formats
+                ]
+                return web.json_response({
+                    "ok": True,
+                    "title": info.get("title"),
+                    "cookie_file": bool(cookie_file),
+                    "formats_count": len(formats),
+                    "formats": fmt_summary,
+                })
         except Exception as e:
             import traceback
             return web.json_response({
