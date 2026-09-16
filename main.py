@@ -98,41 +98,130 @@ async def start_healthcheck_server():
             })
 
     async def handle_debug_yt(request):
-        v_url = request.query.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        import yt_dlp, traceback
+        v_id = request.query.get("id", "dQw4w9WgXcQ")
+        v_url = f"https://www.youtube.com/watch?v={v_id}"
+        import urllib.request, json, asyncio, yt_dlp
 
-        tested = {}
-        client_configs = [
-            ("default", {}),
-            ("tv", {"extractor_args": {"youtube": {"player_client": ["tv"]}}}),
-            ("mweb", {"extractor_args": {"youtube": {"player_client": ["mweb"]}}}),
-            ("web", {"extractor_args": {"youtube": {"player_client": ["web"]}}}),
-            ("tv_embedded", {"extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}),
-        ]
+        report = {"yt_dlp": {}, "invidious": {}, "piped": {}, "cobalt": {}}
 
-        for name, extra in client_configs:
-            opts = {
-                "quiet": True,
-                "no_warnings": False,
-                "noplaylist": True,
-                "js_runtimes": {"node": {}},
-                **extra,
-            }
+        def _test_ytdlp():
+            configs = [
+                ("visionos", {"extractor_args": {"youtube": {"player_client": ["visionos"]}}}),
+                ("ios", {"extractor_args": {"youtube": {"player_client": ["ios"]}}}),
+                ("tv_downgraded", {"extractor_args": {"youtube": {"player_client": ["tv_downgraded"]}}}),
+                ("web_embedded", {"extractor_args": {"youtube": {"player_client": ["web_embedded"]}}}),
+                ("default", {}),
+            ]
+            ytdlp_res = {}
+            for name, extra in configs:
+                opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "noplaylist": True,
+                    "socket_timeout": 5,
+                    "retries": 0,
+                    "js_runtimes": {"node": {}},
+                    **extra,
+                }
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(v_url, download=False)
+                        if info:
+                            formats = [f.get("format_id") for f in info.get("formats", [])]
+                            ytdlp_res[name] = {
+                                "ok": True,
+                                "title": info.get("title"),
+                                "formats_count": len(formats),
+                            }
+                            return ytdlp_res, name
+                except Exception as e:
+                    ytdlp_res[name] = {"ok": False, "err": str(e)[:150]}
+            return ytdlp_res, None
+
+        # 1. Test yt-dlp in thread
+        try:
+            res, winner = await asyncio.wait_for(asyncio.to_thread(_test_ytdlp), timeout=15)
+            report["yt_dlp"] = {"winner": winner, "details": res}
+            if winner:
+                return web.json_response({"ok": True, "source": "yt-dlp", "winner": winner, "report": report})
+        except Exception as e:
+            report["yt_dlp"] = {"error": str(e)}
+
+        # 2. Test Invidious instances
+        def _test_invidious():
+            inv_res = {}
             try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(v_url, download=False)
-                    formats = [f.get("format_id") for f in info.get("formats", [])]
-                    tested[name] = {
-                        "ok": True,
-                        "title": info.get("title"),
-                        "formats_count": len(formats),
-                        "formats": formats[:10],
-                    }
-                    return web.json_response({"ok": True, "winner": name, "details": tested[name], "tested": tested})
+                req = urllib.request.Request("https://instances.invidious.io/api/v1/instances.json", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    instances = json.loads(r.read().decode())
+                    live = [item[1].get("uri") for item in instances if isinstance(item, list) and item[1].get("type") == "https" and item[1].get("api") and item[1].get("monitor", {}).get("status") == "200"]
+                    inv_res["live_count"] = len(live)
+                    for uri in live[:5]:
+                        try:
+                            v_req = urllib.request.Request(f"{uri}/api/v1/videos/{v_id}", headers={"User-Agent": "Mozilla/5.0"})
+                            with urllib.request.urlopen(v_req, timeout=5) as vr:
+                                v_data = json.loads(vr.read().decode())
+                                streams = v_data.get("formatStreams", [])
+                                if streams:
+                                    inv_res["winner"] = {
+                                        "uri": uri,
+                                        "title": v_data.get("title"),
+                                        "streams": len(streams),
+                                        "stream_url": streams[0].get("url")[:80]
+                                    }
+                                    return inv_res, uri
+                        except Exception as ie:
+                            inv_res[uri] = str(ie)[:80]
             except Exception as e:
-                tested[name] = {"ok": False, "err": str(e)}
+                inv_res["fetch_error"] = str(e)
+            return inv_res, None
 
-        return web.json_response({"ok": False, "tested": tested})
+        try:
+            inv_res, inv_winner = await asyncio.wait_for(asyncio.to_thread(_test_invidious), timeout=12)
+            report["invidious"] = inv_res
+            if inv_winner:
+                return web.json_response({"ok": True, "source": "invidious", "winner": inv_winner, "report": report})
+        except Exception as e:
+            report["invidious"] = {"error": str(e)}
+
+        # 3. Test Piped instances
+        def _test_piped():
+            piped_res = {}
+            try:
+                req = urllib.request.Request("https://piped-instances.kavin.rocks/", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    instances = json.loads(r.read().decode())
+                    piped_urls = [inst.get("api_url") for inst in instances if inst.get("api_url")]
+                    piped_res["count"] = len(piped_urls)
+                    for purl in piped_urls[:5]:
+                        try:
+                            v_req = urllib.request.Request(f"{purl}/streams/{v_id}", headers={"User-Agent": "Mozilla/5.0"})
+                            with urllib.request.urlopen(v_req, timeout=5) as vr:
+                                p_data = json.loads(vr.read().decode())
+                                v_streams = p_data.get("videoStreams", [])
+                                if v_streams:
+                                    piped_res["winner"] = {
+                                        "api_url": purl,
+                                        "title": p_data.get("title"),
+                                        "streams": len(v_streams),
+                                        "url": v_streams[0].get("url")[:80]
+                                    }
+                                    return piped_res, purl
+                        except Exception as pe:
+                            piped_res[purl] = str(pe)[:80]
+            except Exception as e:
+                piped_res["fetch_error"] = str(e)
+            return piped_res, None
+
+        try:
+            piped_res, piped_winner = await asyncio.wait_for(asyncio.to_thread(_test_piped), timeout=12)
+            report["piped"] = piped_res
+            if piped_winner:
+                return web.json_response({"ok": True, "source": "piped", "winner": piped_winner, "report": report})
+        except Exception as e:
+            report["piped"] = {"error": str(e)}
+
+        return web.json_response({"ok": False, "report": report})
 
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
