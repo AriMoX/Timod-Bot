@@ -20,6 +20,7 @@ from bot.services.spotify import (
 )
 from bot.services.cache import get_cached_audio, save_cached_audio
 from bot.utils.cleanup import safe_remove
+from bot.config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
@@ -437,12 +438,17 @@ async def handle_instagram(message: Message):
 
     except InstagramLoginRequiredError:
         logger.warning("Instagram login required for URL: %s", url)
-        await status_msg.edit_text(
-            "⚠️ **اینستاگرام دسترسی به این مدیا را محدود کرده است.**\n\n"
-            "اینستاگرام برای دانلود برخی ریلزها و پست‌ها نیاز به نشست کاربری (Cookie) دارد.\n\n"
-            "💡 **راهکار دائمی:**\n"
-            "می‌توانید مقدار `INSTAGRAM_SESSIONID` یا یک فایل `cookies.txt` را در تنظیمات ربات قرار دهید تا تمامی لینک‌ها بدون وقفه دانلود شوند."
-        )
+        if message.from_user and message.from_user.id == ADMIN_ID:
+            await status_msg.edit_text(
+                "⚠️ <b>خطا در دسترسی به اینستاگرام (مخصوص مالک ربات):</b>\n\n"
+                "اینستاگرام برای این مدیا نیاز به سشن لاگین دارد (تنظیم INSTAGRAM_SESSIONID).",
+                parse_mode="HTML",
+            )
+        else:
+            await status_msg.edit_text(
+                "❌ متأسفانه در دانلود این لینک اینستاگرام خطایی رخ داد.\n\n"
+                "لطفاً مطمئن شوید که صفحه/پست عمومی (Public) است و دوباره امتحان کنید."
+            )
     except Exception as e:
         logger.exception("Error processing Instagram URL: %s", url)
         await status_msg.edit_text(
@@ -488,13 +494,19 @@ async def handle_youtube(message: Message):
 
     except YouTubeBotDetectionError:
         logger.warning("YouTube bot protection / login required for URL: %s", url)
-        await status_msg.edit_text(
-            "⚠️ <b>یوتیوب دسترسی مستقیم سرور به این مدیا را محدود کرده است.</b>\n\n"
-            "گوگل/یوتیوب برای دانلود ویدیو از سرورهای ابری نیاز به کوکی مرورگر (Cookie) دارد.\n\n"
-            "💡 <b>راهکار دائمی و آسان:</b>\n"
-            "می‌توانید یک فایل <code>cookies.txt</code> (صادر شده از مرورگر) در تنظیمات ربات قرار دهید یا مقدار <code>YOUTUBE_COOKIES_TEXT</code> را در متغیرهای سرور قرار دهید تا تمام ویدیوها و شورت‌های یوتیوب با حداکثر سرعت دانلود شوند.",
-            parse_mode="HTML",
-        )
+        if message.from_user and message.from_user.id == ADMIN_ID:
+            await status_msg.edit_text(
+                "⚠️ <b>خطا در دسترسی به یوتیوب (مخصوص مالک ربات):</b>\n\n"
+                "یوتیوب دسترسی سرور را محدود کرده و نیازمند کوکی فعال است.\n"
+                "💡 لطفاً فایل جدید <code>cookies.txt</code> را در پی‌وی همین ربات ارسال نمایید.",
+                parse_mode="HTML",
+            )
+        else:
+            await status_msg.edit_text(
+                "❌ <b>متأسفانه در دانلود این ویدیوی یوتیوب خطایی رخ داد.</b>\n\n"
+                "لطفاً مطمئن شوید که ویدیو عمومی و در دسترس است و مجدداً تلاش کنید.",
+                parse_mode="HTML",
+            )
     except ValueError as ve:
         # Handles 50MB file size limit or other expected value errors
         logger.warning("YouTube download value error for %s: %s", url, ve)
