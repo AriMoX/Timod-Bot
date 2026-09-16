@@ -274,7 +274,7 @@ async def start_healthcheck_server():
 
             from bot.config import DOWNLOADS_DIR
             file_path = DOWNLOADS_DIR / filename
-            if file_path.exists() and file_path.stat().st_size > 50000:
+            if file_path.exists() and file_path.stat().st_size > 30000:
                 elapsed = round(time.time() - t_start, 3)
                 logger.info("Serving cached audio from disk in %ss: %s (%s bytes)", elapsed, filename, file_path.stat().st_size)
                 req_entry["status"] = f"200_cached_{elapsed}s"
@@ -299,12 +299,36 @@ async def start_healthcheck_server():
             if not meta or not meta.title:
                 meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
 
-            audio_path = await get_or_prepare_spotify_mp3(meta)
+            # Wait maximum 4.2s to strictly beat Telegram's 7s client timeout!
+            audio_path = None
+            try:
+                audio_path = await asyncio.wait_for(get_or_prepare_spotify_mp3(meta), timeout=4.2)
+            except asyncio.TimeoutError:
+                logger.warning("Preparation for %s took > 4.2s, checking fast safety backup", track_id)
+                fast_backup = DOWNLOADS_DIR / f"fast_sp_{track_id}.mp3"
+                if fast_backup.exists() and fast_backup.stat().st_size > 30000:
+                    elapsed = round(time.time() - t_start, 2)
+                    logger.info("Serving instant fast backup in %ss: %s (%s bytes)", elapsed, fast_backup.name, fast_backup.stat().st_size)
+                    req_entry["status"] = f"200_fast_backup_{elapsed}s"
+                    return web.FileResponse(fast_backup)
+                # Wait up to 1.8s more if backup not yet written
+                try:
+                    audio_path = await asyncio.wait_for(get_or_prepare_spotify_mp3(meta), timeout=1.8)
+                except Exception as e:
+                    logger.warning("Preparation exceeded safety margin for %s: %s", track_id, e)
+
             elapsed = round(time.time() - t_start, 2)
-            if audio_path.exists() and audio_path.stat().st_size > 50000:
+            if audio_path and audio_path.exists() and audio_path.stat().st_size > 30000:
                 logger.info("Prepared and serving audio in %ss: %s (%s bytes)", elapsed, filename, audio_path.stat().st_size)
                 req_entry["status"] = f"200_prepared_{elapsed}s"
                 return web.FileResponse(audio_path)
+
+            # Final safety check: if any candidate file exists for track_id, serve it
+            cand_files = list(DOWNLOADS_DIR.glob(f"*{track_id}*.mp3"))
+            if cand_files and cand_files[0].stat().st_size > 30000:
+                logger.info("Serving fallback audio file: %s", cand_files[0].name)
+                req_entry["status"] = f"200_cand_{elapsed}s"
+                return web.FileResponse(cand_files[0])
 
             req_entry["status"] = f"500_file_missing_or_small_{elapsed}s"
             return web.Response(status=500, text=f"File not ready: {audio_path}")
