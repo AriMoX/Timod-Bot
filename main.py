@@ -116,10 +116,14 @@ async def start_healthcheck_server():
 
     async def handle_debug_yt(request):
         v_url = request.query.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        use_cookie = request.query.get("cookie", "1") == "1"
+        client = request.query.get("client")
+
         import json
         import yt_dlp
         from bot.services.youtube import _prepare_youtube_cookie_file
-        cookie_file = _prepare_youtube_cookie_file()
+        
+        cookie_file = _prepare_youtube_cookie_file() if use_cookie else None
         
         logs = []
         class LogCapture:
@@ -128,8 +132,14 @@ async def start_healthcheck_server():
             def warning(self, msg): logs.append(f"[W] {msg}")
             def error(self, msg): logs.append(f"[E] {msg}")
 
+        clients_list = [c.strip() for c in client.split(",")] if client else ["visionos", "android", "web"]
+
         opts = {
+            "format": "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best",
+            "merge_output_format": "mp4",
             "cookiefile": cookie_file,
+            "js_runtimes": {"node": {}},
+            "extractor_args": {"youtube": {"player_client": clients_list}},
             "logger": LogCapture(),
             "verbose": True,
         }
@@ -139,14 +149,20 @@ async def start_healthcheck_server():
                 return web.json_response({
                     "ok": True,
                     "title": info.get("title") if info else None,
-                    "logs": logs[:40],
+                    "formats_count": len(info.get("formats", [])) if info else 0,
+                    "using_cookie": bool(cookie_file),
+                    "clients": clients_list,
+                    "logs": logs[-25:],
                 })
         except Exception as e:
             return web.json_response({
                 "ok": False,
                 "error": str(e),
-                "logs": logs[:40],
+                "using_cookie": bool(cookie_file),
+                "clients": clients_list,
+                "logs": logs[-25:],
             })
+
 
 
     app.router.add_get("/", handle_ping)

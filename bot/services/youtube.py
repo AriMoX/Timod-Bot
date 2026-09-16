@@ -56,6 +56,17 @@ def _sanitize_cookies(cookie_content: str) -> str:
 
 def _prepare_youtube_cookie_file() -> str | None:
     """Returns path to cookie file if configured via file or env var."""
+    # 1. First priority: cookie uploaded directly by admin via Telegram bot
+    admin_cookie = DOWNLOADS_DIR / "admin_cookies.txt"
+    if admin_cookie.exists() and admin_cookie.stat().st_size > 50:
+        return str(admin_cookie)
+
+    # 2. Existing yt_cookies.txt file
+    yt_cookie = DOWNLOADS_DIR / "yt_cookies.txt"
+    if yt_cookie.exists() and yt_cookie.stat().st_size > 50:
+        return str(yt_cookie)
+
+    # 3. Environment variable from Render
     raw_cookies = os.getenv("YOUTUBE_COOKIES_TEXT") or YOUTUBE_COOKIES_TEXT
     if raw_cookies:
         sanitized = _sanitize_cookies(raw_cookies)
@@ -70,8 +81,7 @@ def _prepare_youtube_cookie_file() -> str | None:
         clean_file.write_text(sanitized, encoding="utf-8")
         return str(clean_file)
 
-    # Check for cookies.txt in root directory or downloads directory
-    for candidate in [DOWNLOADS_DIR / "yt_cookies.txt", DOWNLOADS_DIR / "cookies.txt", DOWNLOADS_DIR.parent / "cookies.txt"]:
+    for candidate in [DOWNLOADS_DIR / "cookies.txt", DOWNLOADS_DIR.parent / "cookies.txt"]:
         if candidate.exists() and candidate.stat().st_size > 50:
             sanitized = _sanitize_cookies(candidate.read_text(encoding="utf-8", errors="ignore"))
             clean_file = DOWNLOADS_DIR / "yt_cookies.txt"
@@ -82,99 +92,137 @@ def _prepare_youtube_cookie_file() -> str | None:
 
 
 def _download_youtube_sync(url: str) -> YouTubeVideo:
-    """Synchronously download YouTube video or Shorts using yt-dlp."""
+    """Synchronously download YouTube video or Shorts using yt-dlp with smart fallback."""
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
-    # Resilient format selector: picks best video and audio up to 1080p,
-    # and remuxes/merges them seamlessly to MP4 format for Telegram playback
-    ydl_opts = {
-        "format": "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best",
-        "merge_output_format": "mp4",
-        "ffmpeg_location": ffmpeg_exe,
-        "outtmpl": str(DOWNLOADS_DIR / "yt_%(id)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 2,
-        "js_runtimes": {"node": {}},
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
+    def build_ydl_opts(cookie_path: str | None) -> dict:
+        opts = {
+            "format": "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best",
+            "merge_output_format": "mp4",
+            "ffmpeg_location": ffmpeg_exe,
+            "outtmpl": str(DOWNLOADS_DIR / "yt_%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 30,
+            "retries": 2,
+            "js_runtimes": {"node": {}},
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["visionos", "android", "web"]
+                }
+            },
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        }
+        if cookie_path:
+            opts["cookiefile"] = cookie_path
+        if PROXY_URL:
+            opts["proxy"] = PROXY_URL
+        return opts
 
     cookie_file = _prepare_youtube_cookie_file()
+
+    # Formulate attempt sequence:
+    # If cookie exists: try with cookie first; if it fails due to bad/expired cookie, try without cookie.
+    # If no cookie exists: try without cookie directly.
+    attempts = []
     if cookie_file:
-        ydl_opts["cookiefile"] = cookie_file
-        logger.info("Using YouTube cookie file: %s", cookie_file)
+        attempts.append((cookie_file, True))
+        attempts.append((None, False))
+    else:
+        attempts.append((None, False))
 
-    if PROXY_URL:
-        ydl_opts["proxy"] = PROXY_URL
-        logger.info("Using proxy for YouTube: %s", PROXY_URL)
+    last_error = None
+    for c_path, is_cookie in attempts:
+        ydl_opts = build_ydl_opts(c_path)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if not info:
+                    raise ValueError("Could not extract YouTube video information.")
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if not info:
-                raise ValueError("Could not extract YouTube video information.")
+                if "entries" in info:
+                    info = info["entries"][0]
 
-            if "entries" in info:
-                info = info["entries"][0]
+                video_id = info.get("id")
+                filename = ydl.prepare_filename(info)
+                file_path = Path(filename)
 
-            video_id = info.get("id")
-            filename = ydl.prepare_filename(info)
-            file_path = Path(filename)
+                if not file_path.exists():
+                    matches = list(DOWNLOADS_DIR.glob(f"yt_{video_id}.*"))
+                    if matches:
+                        file_path = matches[0]
+                    else:
+                        raise FileNotFoundError(f"YouTube video file not found for ID: {video_id}")
 
-            if not file_path.exists():
-                matches = list(DOWNLOADS_DIR.glob(f"yt_{video_id}.*"))
-                if matches:
-                    file_path = matches[0]
-                else:
-                    raise FileNotFoundError(f"YouTube video file not found for ID: {video_id}")
+                # Ensure MP4 container for native Telegram video player
+                if file_path.suffix.lower() != ".mp4":
+                    mp4_path = file_path.with_suffix(".mp4")
+                    try:
+                        subprocess.run(
+                            [ffmpeg_exe, "-y", "-i", str(file_path), "-c", "copy", str(mp4_path)],
+                            check=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=60,
+                        )
+                        safe_remove(file_path)
+                        file_path = mp4_path
+                    except Exception as remux_err:
+                        logger.warning("Failed to remux %s to mp4: %s", file_path, remux_err)
 
-            # Ensure MP4 container for native Telegram video player
-            if file_path.suffix.lower() != ".mp4":
-                mp4_path = file_path.with_suffix(".mp4")
-                try:
-                    subprocess.run(
-                        [ffmpeg_exe, "-y", "-i", str(file_path), "-c", "copy", str(mp4_path)],
-                        check=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=60,
+                # Check Telegram 50MB upload limit
+                if file_path.stat().st_size > TELEGRAM_MAX_BYTES:
+                    raise ValueError(
+                        f"حجم این ویدیو ({file_path.stat().st_size / (1024*1024):.1f} مگابایت) بیشتر از سقف مجاز تلگرام (۵۰ مگابایت) است."
                     )
-                    safe_remove(file_path)
-                    file_path = mp4_path
-                except Exception as remux_err:
-                    logger.warning("Failed to remux %s to mp4: %s", file_path, remux_err)
 
-            # Check Telegram 50MB upload limit
-            if file_path.stat().st_size > TELEGRAM_MAX_BYTES:
-                raise ValueError(
-                    f"حجم این ویدیو ({file_path.stat().st_size / (1024*1024):.1f} مگابایت) بیشتر از سقف مجاز تلگرام (۵۰ مگابایت) است."
+                title = info.get("title") or "YouTube Video"
+                uploader = info.get("uploader") or info.get("channel") or "YouTube"
+                duration = int(info.get("duration") or 0)
+                width = info.get("width")
+                height = info.get("height")
+
+                return YouTubeVideo(
+                    title=title,
+                    uploader=uploader,
+                    duration=duration,
+                    file_path=file_path,
+                    width=width,
+                    height=height,
                 )
 
-            title = info.get("title") or "YouTube Video"
-            uploader = info.get("uploader") or info.get("channel") or "YouTube"
-            duration = int(info.get("duration") or 0)
-            width = info.get("width")
-            height = info.get("height")
+        except yt_dlp.utils.DownloadError as de:
+            last_error = de
+            err_str = str(de).lower()
+            logger.warning("YouTube download attempt (using_cookie=%s) failed: %s", is_cookie, de)
 
-            return YouTubeVideo(
-                title=title,
-                uploader=uploader,
-                duration=duration,
-                file_path=file_path,
-                width=width,
-                height=height,
-            )
+            # If this was a cookie attempt and it failed because cookies are invalid or blocked, fallback
+            if is_cookie and any(kw in err_str for kw in [
+                "cookies are no longer valid",
+                "403",
+                "requested format is not available",
+                "the page needs to be reloaded",
+                "forbidden"
+            ]):
+                logger.info("Retrying YouTube extraction without cookies...")
+                continue
 
-    except yt_dlp.utils.DownloadError as de:
-        err_str = str(de).lower()
-        if any(kw in err_str for kw in ["sign in to confirm", "bot", "failed to extract any player response", "429"]):
-            raise YouTubeBotDetectionError("YouTube bot protection blocked access on datacenter IP") from de
-        raise
+            if any(kw in err_str for kw in ["sign in to confirm", "bot", "failed to extract any player response", "429"]):
+                raise YouTubeBotDetectionError("YouTube bot protection blocked access on datacenter IP") from de
+            raise
+
+        except Exception as ex:
+            last_error = ex
+            if is_cookie:
+                continue
+            raise
+
+    if last_error:
+        raise last_error
 
 
 async def download_youtube(url: str) -> YouTubeVideo:

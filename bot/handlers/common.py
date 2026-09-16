@@ -242,17 +242,19 @@ async def handle_admin_document(message: Message):
 
     if "cookie" in filename or "cookie" in caption or filename.endswith(".txt"):
         status_msg = await message.reply("⏳ در حال دریافت و فعال‌سازی فایل کوکی یوتیوب...")
-        dest_path = DOWNLOADS_DIR / "yt_cookies.txt"
+        dest_path = DOWNLOADS_DIR / "admin_cookies.txt"
+        yt_path = DOWNLOADS_DIR / "yt_cookies.txt"
         try:
             await message.bot.download(doc, destination=dest_path)
             from bot.services.youtube import _sanitize_cookies
             content = dest_path.read_text(encoding="utf-8", errors="ignore")
             sanitized = _sanitize_cookies(content)
             dest_path.write_text(sanitized, encoding="utf-8")
+            yt_path.write_text(sanitized, encoding="utf-8")
 
             await status_msg.edit_text(
                 "✅ <b>فایل کوکی یوتیوب با موفقیت ذخیره و فعال شد!</b>\n\n"
-                "تمامی نشست‌های حساس پاکسازی شده و ربات آماده دانلود ویدیوها و شورت‌های یوتیوب است.",
+                "تمامی نشست‌های حساس پاکسازی شده و کوکی جدید با بالاترین اولویت در ربات فعال گردید.",
                 parse_mode="HTML",
             )
         except Exception as e:
