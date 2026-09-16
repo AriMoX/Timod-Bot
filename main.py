@@ -93,11 +93,39 @@ async def start_healthcheck_server():
                 "trace": traceback.format_exc(),
             })
 
+    async def handle_debug_yt(request):
+        q = request.query.get("q", "ytsearch1:Rick Astley Never Gonna Give You Up")
+        import yt_dlp, traceback
+        opts = {
+            "quiet": True,
+            "no_warnings": False,
+            "format": "bestaudio/best",
+            "noplaylist": True,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios"]
+                }
+            }
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(q, download=False)
+                entries = info.get("entries", [])
+                return web.json_response({
+                    "ok": True,
+                    "count": len(entries),
+                    "first_id": entries[0].get("id") if entries else None,
+                    "first_title": entries[0].get("title") if entries else None,
+                })
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
     app.router.add_get("/version", handle_version)
     app.router.add_get("/test-pin", handle_test_pin)
     app.router.add_get("/test-spotify", handle_test_spotify)
+    app.router.add_get("/debug-yt", handle_debug_yt)
 
     runner = web.AppRunner(app)
     await runner.setup()
