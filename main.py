@@ -98,26 +98,29 @@ async def start_healthcheck_server():
             })
 
     async def handle_debug_yt(request):
-        q = request.query.get("q", "ytsearch1:Rick Astley Never Gonna Give You Up")
+        q = request.query.get("q", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        client = request.query.get("client")
         import yt_dlp, traceback
         opts = {
             "quiet": True,
             "no_warnings": False,
-            "format": "bestaudio/best",
             "noplaylist": True,
             "js_runtimes": {"node": {}},
         }
+        if client:
+            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(q, download=False)
-                entries = info.get("entries", [])
-                e = entries[0] if entries else info
-                formats = [f.get("format_id") for f in e.get("formats", []) if f.get("vcodec") == "none"]
+                formats = [
+                    f"{f.get('format_id')}: {f.get('ext')} v={f.get('vcodec')} a={f.get('acodec')} abr={f.get('abr')}"
+                    for f in info.get("formats", [])
+                ]
                 return web.json_response({
                     "ok": True,
-                    "id": e.get("id"),
-                    "title": e.get("title"),
-                    "audio_formats": formats[:10],
+                    "id": info.get("id"),
+                    "title": info.get("title"),
+                    "formats": formats[:15],
                 })
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})

@@ -131,8 +131,8 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 20,
-        "retries": 3,
+        "socket_timeout": 8,
+        "retries": 1,
         "js_runtimes": {"node": {}},
     }
 
@@ -140,22 +140,13 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
     actual_duration = meta_duration
     all_errors = []
 
-    # 2. Tier 1: YouTube Search with Node.js JS solver
-    yt_queries = [
-        f"ytsearch1:{artist} - {title}",
-        f"ytsearch1:{artist} {title} audio",
-    ]
-    yt_opts = {
-        **base_opts,
-    }
-
-    for q in yt_queries:
-        logger.info("Searching YouTube for Spotify track: %s", q)
-        try:
-            with yt_dlp.YoutubeDL(yt_opts) as yt_ydl:
-                info = yt_ydl.extract_info(q, download=True)
-                if not info:
-                    continue
+    # 2. Tier 1: Fast YouTube Search with Node.js JS solver (8s max)
+    yt_query = f"ytsearch1:{artist} - {title}"
+    logger.info("Searching YouTube for Spotify track: %s", yt_query)
+    try:
+        with yt_dlp.YoutubeDL(base_opts) as yt_ydl:
+            info = yt_ydl.extract_info(yt_query, download=True)
+            if info:
                 entries = info.get("entries") or [info]
                 for entry in entries:
                     if not entry:
@@ -168,13 +159,11 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
                         actual_duration = int(c_dur or meta_duration or 0)
                         logger.info("Found YouTube audio candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
                         break
-            if raw_file_path and raw_file_path.exists():
-                break
-        except Exception as yt_err:
-            logger.warning("YouTube query '%s' failed: %s", q, yt_err)
-            all_errors.append(f"YouTube '{q}': {yt_err}")
+    except Exception as yt_err:
+        logger.warning("YouTube query failed: %s", yt_err)
+        all_errors.append(f"YouTube: {yt_err}")
 
-    # 3. Tier 2: SoundCloud Search with DRM preview skip
+    # 3. Tier 2: Smart SoundCloud Search with DRM preview skip & duration proximity
     if not raw_file_path or not raw_file_path.exists():
         sc_query = f"scsearch5:{artist} {title}"
         logger.info("Falling back to SoundCloud search: %s", sc_query)
@@ -186,19 +175,27 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
             with yt_dlp.YoutubeDL(sc_search_opts) as sc_ydl:
                 sc_info = sc_ydl.extract_info(sc_query, download=False)
                 candidates = sc_info.get("entries") or [sc_info]
+
+                # Filter out short 30s previews (SoundCloud Go+ DRM snippets)
+                valid_candidates = []
                 for entry in candidates:
                     if not entry:
                         continue
                     c_dur = entry.get("duration") or 0
-                    # Skip 30s previews (SoundCloud Go+ DRM snippets)
                     if meta_duration > 60 and c_dur <= 35:
                         logger.info("Skipping short SoundCloud DRM preview (%ss) for %s", c_dur, entry.get("id"))
                         continue
+                    valid_candidates.append(entry)
 
+                # Prioritize candidate closest in duration to the Spotify original track
+                if meta_duration > 0:
+                    valid_candidates.sort(key=lambda x: abs((x.get("duration") or 0) - meta_duration))
+
+                for entry in valid_candidates:
                     cand_url = entry.get("webpage_url") or entry.get("url")
                     if not cand_url:
                         continue
-
+                    c_dur = entry.get("duration") or 0
                     try:
                         logger.info("Trying SoundCloud candidate: %s (%ss)", entry.get("title"), c_dur)
                         with yt_dlp.YoutubeDL(base_opts) as sc_dl:
