@@ -100,7 +100,37 @@ async def start_healthcheck_server():
     async def handle_debug_yt(request):
         v_id = request.query.get("id", "dQw4w9WgXcQ")
         v_url = f"https://www.youtube.com/watch?v={v_id}"
-        import urllib.request, json, asyncio, yt_dlp
+        req_client = request.query.get("client")
+        import urllib.request, json, asyncio, yt_dlp, traceback
+
+        if req_client:
+            def _test_single():
+                extra = {}
+                if req_client != "default":
+                    extra = {"extractor_args": {"youtube": {"player_client": [req_client]}}}
+                opts = {
+                    "quiet": True,
+                    "no_warnings": False,
+                    "noplaylist": True,
+                    "socket_timeout": 12,
+                    "js_runtimes": {"node": {}},
+                    **extra,
+                }
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(v_url, download=False)
+                    formats = [f.get("format_id") for f in info.get("formats", [])]
+                    return {
+                        "ok": True,
+                        "client": req_client,
+                        "title": info.get("title"),
+                        "formats_count": len(formats),
+                        "formats": formats[:10],
+                    }
+            try:
+                res = await asyncio.wait_for(asyncio.to_thread(_test_single), timeout=25)
+                return web.json_response(res)
+            except Exception as e:
+                return web.json_response({"ok": False, "client": req_client, "error": str(e), "trace": traceback.format_exc()})
 
         report = {"yt_dlp": {}, "invidious": {}, "piped": {}, "cobalt": {}}
 
