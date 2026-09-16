@@ -99,67 +99,53 @@ async def start_healthcheck_server():
 
     async def handle_debug_yt(request):
         v_id = request.query.get("id", "dQw4w9WgXcQ")
-        target_url = f"https://www.youtube.com/watch?v={v_id}"
         import urllib.request, json
 
-        results = {}
+        # 1. Fetch official list of live Invidious instances
+        live_instances = []
+        try:
+            req = urllib.request.Request(
+                "https://instances.invidious.io/api/v1/instances.json",
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read().decode())
+                # Each item is [domain, {info}]
+                for item in data:
+                    if isinstance(item, list) and len(item) == 2:
+                        domain, info = item[0], item[1]
+                        # Check if online and api enabled
+                        if info.get("type") == "https" and info.get("api") and info.get("monitor", {}).get("status") == "200":
+                            live_instances.append(info.get("uri"))
+        except Exception as e:
+            return web.json_response({"ok": False, "instances_fetch_error": str(e)})
 
-        # 1. Test Invidious instances
-        invid_instances = [
-            "https://invidious.nerdvpn.de",
-            "https://inv.tux.pizza",
-            "https://invidious.drgns.space",
-            "https://yt.artemislena.eu",
-            "https://yewtu.be",
-        ]
-        for inst in invid_instances:
+        # 2. Test top 5 healthy instances
+        tested = {}
+        for uri in live_instances[:8]:
             try:
-                req = urllib.request.Request(
-                    f"{inst}/api/v1/videos/{v_id}",
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
-                with urllib.request.urlopen(req, timeout=6) as r:
-                    data = json.loads(r.read().decode())
-                    streams = data.get("formatStreams", [])
-                    results[f"invidious:{inst}"] = {
+                v_url = f"{uri}/api/v1/videos/{v_id}"
+                v_req = urllib.request.Request(v_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(v_req, timeout=8) as vr:
+                    v_data = json.loads(vr.read().decode())
+                    streams = v_data.get("formatStreams", [])
+                    tested[uri] = {
                         "ok": True,
-                        "title": data.get("title"),
-                        "streams_count": len(streams),
-                        "first_stream_url": streams[0].get("url")[:80] if streams else None,
+                        "title": v_data.get("title"),
+                        "streams": len(streams),
+                        "first_url": streams[0].get("url")[:60] if streams else None,
                     }
-                    break
-            except Exception as e:
-                results[f"invidious:{inst}"] = {"ok": False, "err": str(e)}
-
-        # 2. Test Cobalt instances
-        cobalt_instances = [
-            "https://co.eepy.today",
-            "https://cobalt.canine.tools",
-            "https://cobalt.streamrip.app",
-            "https://dl.khub.win",
-            "https://cobalt.xy2401.com",
-        ]
-        for c_inst in cobalt_instances:
-            try:
-                payload = json.dumps({"url": target_url, "videoQuality": "720"}).encode()
-                req = urllib.request.Request(
-                    c_inst,
-                    data=payload,
-                    headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-                    method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=6) as r:
-                    data = json.loads(r.read().decode())
-                    results[f"cobalt:{c_inst}"] = {
+                    return web.json_response({
                         "ok": True,
-                        "status": data.get("status"),
-                        "url": data.get("url", "")[:80],
-                    }
-                    break
-            except Exception as e:
-                results[f"cobalt:{c_inst}"] = {"ok": False, "err": str(e)}
+                        "working_instance": uri,
+                        "title": v_data.get("title"),
+                        "stream_url": streams[0].get("url") if streams else None,
+                        "tested": tested,
+                    })
+            except Exception as err:
+                tested[uri] = {"ok": False, "err": str(err)}
 
-        return web.json_response(results)
+        return web.json_response({"ok": False, "tested": tested, "found_count": len(live_instances)})
 
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
