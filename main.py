@@ -208,6 +208,40 @@ async def start_healthcheck_server():
             return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
 
+    async def handle_test_inline_audio(request):
+        import traceback
+        track_id = request.query.get("id", "4cOdK2wGLETKBW3PvgPWqT")
+        from bot.services.spotify import (
+            get_cached_track_meta,
+            get_spotify_track_metadata,
+            get_or_prepare_spotify_mp3,
+            SpotifyTrackMetadata,
+        )
+        try:
+            meta = get_cached_track_meta(track_id)
+            if not meta:
+                meta = await asyncio.to_thread(get_spotify_track_metadata, track_id)
+            audio_path = await get_or_prepare_spotify_mp3(meta)
+            return web.json_response({
+                "ok": True,
+                "meta": {
+                    "title": meta.title,
+                    "artist": meta.artist,
+                    "duration": meta.duration,
+                    "cover_url": meta.cover_url,
+                },
+                "path": str(audio_path),
+                "exists": audio_path.exists(),
+                "size": audio_path.stat().st_size if audio_path.exists() else 0,
+            })
+        except Exception as e:
+            return web.json_response({
+                "ok": False,
+                "error": str(e),
+                "trace": traceback.format_exc(),
+            })
+
+
     async def handle_serve_audio(request):
         filename = request.match_info.get("filename", "")
         if not re.match(r"^sp_[A-Za-z0-9_\-]+\.mp3$", filename):
@@ -251,10 +285,10 @@ async def start_healthcheck_server():
                         "Content-Type": "audio/mpeg",
                     }
                 )
+            return web.Response(status=500, text=f"File exists={audio_path.exists()}, size={audio_path.stat().st_size if audio_path.exists() else 0}")
         except Exception as err:
             logger.error("Error generating inline audio for %s: %s", filename, err)
-
-        return web.Response(status=500, text="Failed to render audio")
+            return web.Response(status=500, text=f"Failed to render audio: {err}")
 
 
     app.router.add_get("/", handle_ping)
@@ -264,6 +298,7 @@ async def start_healthcheck_server():
     app.router.add_get("/test-spotify", handle_test_spotify)
     app.router.add_get("/test-spotify-album", handle_test_spotify_album)
     app.router.add_get("/test-spot-search", handle_test_spot_search)
+    app.router.add_get("/test-inline-audio", handle_test_inline_audio)
     app.router.add_get("/debug-yt", handle_debug_yt)
     app.router.add_route("*", "/audio/{filename}", handle_serve_audio)
 
