@@ -115,14 +115,19 @@ def _generate_search_queries(artist: str, title: str) -> list[str]:
     return deduped
 
 
-def _get_spotify_metadata(url: str) -> SpotifyTrackMetadata:
+def _get_spotify_metadata(url_or_id: str) -> SpotifyTrackMetadata:
     """
-    Extracts title, artist, duration (seconds), cover art URL, and unique track ID from Spotify track URL.
+    Extracts title, artist, duration (seconds), cover art URL, and unique track ID from Spotify track URL or ID.
     Uses ultra-fast Spotify embed metadata with oEmbed fallback.
     """
-    clean_url = resolve_spotify_url(url)
-    track_id_match = re.search(r"/track/([A-Za-z0-9]+)", clean_url)
-    track_id = track_id_match.group(1) if track_id_match else "track"
+    raw_str = (url_or_id or "").strip()
+    if re.match(r"^[A-Za-z0-9]{15,30}$", raw_str):
+        track_id = raw_str
+        clean_url = f"https://open.spotify.com/track/{track_id}"
+    else:
+        clean_url = resolve_spotify_url(raw_str)
+        track_id_match = re.search(r"/track/([A-Za-z0-9]+)", clean_url)
+        track_id = track_id_match.group(1) if track_id_match else "track"
 
     title = "Spotify Track"
     artist = "Unknown Artist"
@@ -175,6 +180,9 @@ def _get_spotify_metadata(url: str) -> SpotifyTrackMetadata:
         logger.warning("Failed to fetch Spotify oEmbed: %s", e)
 
     return SpotifyTrackMetadata(title=title, artist=artist, duration=duration, cover_url=cover_url, track_id=track_id)
+
+
+get_spotify_track_metadata = _get_spotify_metadata
 
 
 def _get_spotify_album_sync(url: str) -> SpotifyAlbum:
@@ -498,13 +506,42 @@ def _get_spotify_api_token() -> str | None:
     return None
 
 
+_INLINE_TRACK_CACHE: dict[str, SpotifyTrackMetadata] = {}
+_active_prep_tasks: dict[str, asyncio.Task] = {}
+
+
+def get_cached_track_meta(track_id: str) -> SpotifyTrackMetadata | None:
+    """Retrieve in-memory cached track metadata from recent searches."""
+    return _INLINE_TRACK_CACHE.get(track_id)
+
+
+def _cache_track_meta(meta: SpotifyTrackMetadata):
+    """Store track metadata in fast LRU-like memory cache."""
+    if meta and meta.track_id:
+        if len(_INLINE_TRACK_CACHE) > 500:
+            for k in list(_INLINE_TRACK_CACHE.keys())[:100]:
+                _INLINE_TRACK_CACHE.pop(k, None)
+        _INLINE_TRACK_CACHE[meta.track_id] = meta
+
+
 def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetadata]:
-    """Search Spotify tracks catalog."""
+    """
+    Search music catalog with intelligent fallbacks:
+    1. Official Spotify Web API (if SPOTIFY_CLIENT_ID / SECRET configured)
+    2. Apple Music / iTunes Catalog API (direct studio metadata, 600x600 covers, free, unblocked)
+    3. Deezer API (direct studio catalog)
+    4. YouTube Music fallback
+    """
+    clean_q = query.strip()
+    if not clean_q:
+        return []
+
+    # Tier 1: Spotify Web API via Client Credentials
     token = _get_spotify_api_token()
     if token:
         try:
             import urllib.parse
-            s_url = f"https://api.spotify.com/v1/search?type=track&limit={limit}&q={urllib.parse.quote(query)}"
+            s_url = f"https://api.spotify.com/v1/search?type=track&limit={limit}&q={urllib.parse.quote(clean_q)}"
             req = urllib.request.Request(
                 s_url,
                 headers={
@@ -525,31 +562,97 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                     dur = int((t.get("duration_ms") or 0) / 1000)
                     imgs = t.get("album", {}).get("images", [])
                     cover = imgs[0].get("url") if imgs else None
-                    results.append(SpotifyTrackMetadata(
+                    m = SpotifyTrackMetadata(
                         title=title,
                         artist=artists,
                         duration=dur,
                         cover_url=cover,
                         track_id=t_id,
-                    ))
+                    )
+                    results.append(m)
+                    _cache_track_meta(m)
                 if results:
                     return results
         except Exception as e:
             logger.warning("Spotify API search failed: %s", e)
 
-    # Resilient fallback: fast metadata search formatted as Spotify tracks
+    # Tier 2: Apple Music / iTunes Store Catalog (clean studio metadata, 600x600 covers)
+    try:
+        import urllib.parse
+        itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(clean_q)}&entity=song&limit={limit}"
+        it_req = urllib.request.Request(itunes_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(it_req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = []
+            for item in data.get("results", []):
+                t_name = item.get("trackName")
+                a_name = item.get("artistName")
+                if not t_name:
+                    continue
+                raw_art = item.get("artworkUrl100") or ""
+                cover_url = raw_art.replace("100x100bb", "600x600bb") if raw_art else None
+                dur = int((item.get("trackTimeMillis") or 0) / 1000)
+                t_id = f"it_{item.get('trackId')}"
+                m = SpotifyTrackMetadata(
+                    title=t_name,
+                    artist=a_name or "Artist",
+                    duration=dur,
+                    cover_url=cover_url,
+                    track_id=t_id,
+                )
+                results.append(m)
+                _cache_track_meta(m)
+            if results:
+                return results
+    except Exception as ie:
+        logger.warning("iTunes search fallback failed: %s", ie)
+
+    # Tier 3: Deezer Studio Catalog
+    try:
+        import urllib.parse
+        deezer_url = f"https://api.deezer.com/search?q={urllib.parse.quote(clean_q)}&limit={limit}"
+        dz_req = urllib.request.Request(deezer_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(dz_req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = []
+            for item in data.get("data", []):
+                t_name = item.get("title")
+                a_name = item.get("artist", {}).get("name")
+                if not t_name:
+                    continue
+                album = item.get("album", {})
+                cover_url = album.get("cover_big") or album.get("cover_medium")
+                dur = item.get("duration") or 0
+                t_id = f"dz_{item.get('id')}"
+                m = SpotifyTrackMetadata(
+                    title=t_name,
+                    artist=a_name or "Artist",
+                    duration=dur,
+                    cover_url=cover_url,
+                    track_id=t_id,
+                )
+                results.append(m)
+                _cache_track_meta(m)
+            if results:
+                return results
+    except Exception as de:
+        logger.warning("Deezer search fallback failed: %s", de)
+
+    # Tier 4: Fast music search fallback
     from bot.services.music_search import _search_music_sync
-    flat_results = _search_music_sync(query, limit=limit)
-    return [
-        SpotifyTrackMetadata(
+    flat_results = _search_music_sync(clean_q, limit=limit)
+    results = []
+    for r in flat_results:
+        m = SpotifyTrackMetadata(
             title=r.title,
             artist=r.artist,
             duration=r.duration,
             cover_url=r.thumbnail,
-            track_id=r.id,
+            track_id=f"yt_{r.id}",
         )
-        for r in flat_results
-    ]
+        results.append(m)
+        _cache_track_meta(m)
+    return results
 
 
 async def search_spotify(query: str, limit: int = 10) -> list[SpotifyTrackMetadata]:
@@ -563,6 +666,12 @@ def get_or_prepare_spotify_mp3_sync(meta: SpotifyTrackMetadata) -> Path:
     if final_path.exists() and final_path.stat().st_size > 50000:
         return final_path
 
+    alt_path = DOWNLOADS_DIR / f"spot_{meta.track_id}.mp3"
+    if alt_path.exists() and alt_path.stat().st_size > 50000:
+        import shutil
+        shutil.copy2(alt_path, final_path)
+        return final_path
+
     track = _download_spotify_track_meta_sync(meta)
     if track.file_path.exists() and track.file_path != final_path:
         import shutil
@@ -571,8 +680,17 @@ def get_or_prepare_spotify_mp3_sync(meta: SpotifyTrackMetadata) -> Path:
 
 
 async def get_or_prepare_spotify_mp3(meta: SpotifyTrackMetadata) -> Path:
-    """Asynchronously ensure high-quality 320k MP3 exists."""
-    return await asyncio.to_thread(get_or_prepare_spotify_mp3_sync, meta)
+    """Asynchronously ensure high-quality 320k MP3 exists without duplicate concurrent downloads."""
+    key = meta.track_id
+    if key in _active_prep_tasks and not _active_prep_tasks[key].done():
+        return await _active_prep_tasks[key]
+
+    task = asyncio.create_task(asyncio.to_thread(get_or_prepare_spotify_mp3_sync, meta))
+    _active_prep_tasks[key] = task
+    try:
+        return await task
+    finally:
+        _active_prep_tasks.pop(key, None)
 
 
 

@@ -216,14 +216,27 @@ async def start_healthcheck_server():
         from bot.config import DOWNLOADS_DIR
         file_path = DOWNLOADS_DIR / filename
         if file_path.exists() and file_path.stat().st_size > 50000:
-            return web.FileResponse(file_path)
+            return web.FileResponse(
+                file_path,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Type": "audio/mpeg",
+                }
+            )
 
         track_id = filename[3:-4]
-        from bot.services.spotify import get_spotify_track_metadata, get_or_prepare_spotify_mp3, SpotifyTrackMetadata
-        try:
-            meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
-        except Exception:
-            meta = None
+        from bot.services.spotify import (
+            get_cached_track_meta,
+            get_spotify_track_metadata,
+            get_or_prepare_spotify_mp3,
+            SpotifyTrackMetadata,
+        )
+        meta = get_cached_track_meta(track_id)
+        if not meta:
+            try:
+                meta = await asyncio.to_thread(get_spotify_track_metadata, track_id)
+            except Exception:
+                meta = None
 
         if not meta or not meta.title:
             meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
@@ -231,7 +244,13 @@ async def start_healthcheck_server():
         try:
             audio_path = await get_or_prepare_spotify_mp3(meta)
             if audio_path.exists() and audio_path.stat().st_size > 50000:
-                return web.FileResponse(audio_path)
+                return web.FileResponse(
+                    audio_path,
+                    headers={
+                        "Accept-Ranges": "bytes",
+                        "Content-Type": "audio/mpeg",
+                    }
+                )
         except Exception as err:
             logger.error("Error generating inline audio for %s: %s", filename, err)
 
@@ -246,7 +265,7 @@ async def start_healthcheck_server():
     app.router.add_get("/test-spotify-album", handle_test_spotify_album)
     app.router.add_get("/test-spot-search", handle_test_spot_search)
     app.router.add_get("/debug-yt", handle_debug_yt)
-    app.router.add_get("/audio/{filename}", handle_serve_audio)
+    app.router.add_route("*", "/audio/{filename}", handle_serve_audio)
 
     runner = web.AppRunner(app)
     await runner.setup()
