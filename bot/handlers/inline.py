@@ -85,13 +85,13 @@ async def handle_inline_query(inline_query: InlineQuery):
         await inline_query.answer(results=[no_result], cache_time=5, is_personal=True)
         return
 
-    # 3. Pre-cache top tracks in background and give top 1 track a 1.2s head start
+    # 3. Pre-cache top tracks in background and give top 1 track a 2.0s head start
     if tracks:
         top_task = asyncio.create_task(get_or_prepare_spotify_mp3(tracks[0]))
         if len(tracks) > 1:
             asyncio.create_task(get_or_prepare_spotify_mp3(tracks[1]))
         try:
-            await asyncio.wait([top_task], timeout=1.2)
+            await asyncio.wait([top_task], timeout=2.0)
         except Exception:
             pass
 
