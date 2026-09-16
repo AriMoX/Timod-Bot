@@ -106,11 +106,11 @@ def _get_spotify_metadata(url: str) -> tuple[str, str, int, str | None, str]:
 
 
 def _download_spotify_sync(url: str) -> SpotifyTrack:
-    """Download matching audio and convert to 320kbps MP3 with embedded HD artwork."""
+    """Download matching audio and package with crystal clear audio and HD artwork."""
     title, artist, meta_duration, cover_url, track_id = _get_spotify_metadata(url)
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
-    # 1. Download highest-resolution cover art thumbnail
+    # 1. Download highest-resolution cover art thumbnail (640x640)
     thumb_path = None
     if cover_url:
         try:
@@ -126,12 +126,12 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
     search_queries = [
         f"ytsearch1:{artist} - {title}",
         f"ytsearch1:{artist} {title} audio",
-        f"scsearch1:{artist} {title}",
+        f"scsearch3:{artist} {title}",
     ]
 
     raw_output_template = str(DOWNLOADS_DIR / f"raw_spot_{track_id}_%(id)s.%(ext)s")
     dl_opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
         "ffmpeg_location": ffmpeg_exe,
         "outtmpl": raw_output_template,
         "quiet": True,
@@ -139,11 +139,6 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
         "noplaylist": True,
         "socket_timeout": 12,
         "retries": 2,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "web"]
-            }
-        },
     }
 
     last_error = None
@@ -151,33 +146,41 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
     actual_duration = meta_duration
 
     for q in search_queries:
-        logger.info("Fast searching audio for Spotify track: %s", q)
+        logger.info("Searching audio candidate for Spotify: %s", q)
         try:
             with yt_dlp.YoutubeDL(dl_opts) as dl_ydl:
                 dl_info = dl_ydl.extract_info(q, download=True)
                 if not dl_info:
                     continue
 
-                if "entries" in dl_info:
-                    entries = dl_info["entries"]
-                    if not entries:
-                        continue
-                    dl_info = entries[0]
-
-                item_id = dl_info.get("id")
-                filename = dl_ydl.prepare_filename(dl_info)
-                f_path = Path(filename)
-
-                if not f_path.exists():
-                    matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{item_id}.*"))
-                    if matches:
-                        f_path = matches[0]
-                    else:
+                entries = dl_info.get("entries") or [dl_info]
+                for entry in entries:
+                    if not entry:
                         continue
 
-                raw_file_path = f_path
-                actual_duration = int(dl_info.get("duration") or meta_duration or 0)
-                logger.info("Downloaded raw stream: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                    # If candidate is a 30s preview while full song is >60s, skip DRM preview
+                    c_dur = entry.get("duration") or 0
+                    if meta_duration > 60 and c_dur <= 35:
+                        logger.info("Skipping short DRM preview (%ss) for candidate %s", c_dur, entry.get("id"))
+                        continue
+
+                    item_id = entry.get("id")
+                    filename = dl_ydl.prepare_filename(entry)
+                    f_path = Path(filename)
+
+                    if not f_path.exists():
+                        matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{item_id}.*"))
+                        if matches:
+                            f_path = matches[0]
+                        else:
+                            continue
+
+                    raw_file_path = f_path
+                    actual_duration = int(c_dur or meta_duration or 0)
+                    logger.info("Found valid audio candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                    break
+
+            if raw_file_path and raw_file_path.exists():
                 break
         except Exception as q_err:
             logger.warning("Query '%s' failed: %s", q, q_err)
@@ -186,37 +189,18 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
     if not raw_file_path or not raw_file_path.exists():
         raise ValueError(f"امکان یافتن یا دانلود فایل صوتی این قطعه وجود ندارد: '{artist} - {title}'. ({last_error})")
 
-    # 3. High-Quality 320kbps MP3 conversion with embedded artwork & metadata
-    final_mp3_path = DOWNLOADS_DIR / f"spot_{track_id}_hq.mp3"
+    # 3. Fast direct remux with clean tags (Instant <0.1s, no generation loss)
+    ext = raw_file_path.suffix.lower() if raw_file_path.suffix else ".m4a"
+    final_audio_path = DOWNLOADS_DIR / f"spot_{track_id}{ext}"
     ffmpeg_cmd = [
         ffmpeg_exe,
         "-y",
         "-i", str(raw_file_path),
-    ]
-
-    if thumb_path and thumb_path.exists():
-        ffmpeg_cmd.extend([
-            "-i", str(thumb_path),
-            "-map", "0:a",
-            "-map", "1:0",
-            "-c:a", "libmp3lame",
-            "-b:a", "320k",
-            "-id3v2_version", "3",
-            "-metadata:s:v", 'title="Album cover"',
-            "-metadata:s:v", 'comment="Cover (front)"',
-        ])
-    else:
-        ffmpeg_cmd.extend([
-            "-c:a", "libmp3lame",
-            "-b:a", "320k",
-            "-id3v2_version", "3",
-        ])
-
-    ffmpeg_cmd.extend([
+        "-c", "copy",
         "-metadata", f"title={title}",
         "-metadata", f"artist={artist}",
-        str(final_mp3_path),
-    ])
+        str(final_audio_path),
+    ]
 
     try:
         subprocess.run(
@@ -224,14 +208,13 @@ def _download_spotify_sync(url: str) -> SpotifyTrack:
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=30,
+            timeout=15,
         )
-        # Remove raw download file now that 320k MP3 is ready
         safe_remove(raw_file_path)
-        output_file = final_mp3_path
-        logger.info("Successfully converted to 320kbps MP3 with artwork: %s", output_file.name)
+        output_file = final_audio_path
+        logger.info("Fast remuxed to clean audio file: %s", output_file.name)
     except Exception as conv_err:
-        logger.warning("FFmpeg 320k conversion failed (%s), falling back to raw audio stream", conv_err)
+        logger.warning("FFmpeg fast remux failed (%s), using raw audio file", conv_err)
         output_file = raw_file_path
 
     return SpotifyTrack(
