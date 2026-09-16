@@ -132,126 +132,107 @@ async def start_healthcheck_server():
             except Exception as e:
                 return web.json_response({"ok": False, "client": req_client, "error": str(e), "trace": traceback.format_exc()})
 
-        report = {"yt_dlp": {}, "invidious": {}, "piped": {}, "cobalt": {}}
+        report = {"cobalt": {}, "piped": {}, "y2mate": {}}
 
-        def _test_ytdlp():
-            configs = [
-                ("visionos", {"extractor_args": {"youtube": {"player_client": ["visionos"]}}}),
-                ("ios", {"extractor_args": {"youtube": {"player_client": ["ios"]}}}),
-                ("tv_downgraded", {"extractor_args": {"youtube": {"player_client": ["tv_downgraded"]}}}),
-                ("web_embedded", {"extractor_args": {"youtube": {"player_client": ["web_embedded"]}}}),
-                ("default", {}),
+        # 1. Test Cobalt instances
+        def _test_cobalts():
+            cobalt_insts = [
+                "https://api.cobalt.tools",
+                "https://cobalt-api.kwiatekm.tokyo",
+                "https://cobalt.canine.tools",
+                "https://cobalt.streamrip.app",
+                "https://dl.khub.win",
             ]
-            ytdlp_res = {}
-            for name, extra in configs:
-                opts = {
-                    "quiet": True,
-                    "no_warnings": True,
-                    "noplaylist": True,
-                    "socket_timeout": 5,
-                    "retries": 0,
-                    "js_runtimes": {"node": {}},
-                    **extra,
-                }
+            c_res = {}
+            for base in cobalt_insts:
                 try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(v_url, download=False)
-                        if info:
-                            formats = [f.get("format_id") for f in info.get("formats", [])]
-                            ytdlp_res[name] = {
-                                "ok": True,
-                                "title": info.get("title"),
-                                "formats_count": len(formats),
-                            }
-                            return ytdlp_res, name
-                except Exception as e:
-                    ytdlp_res[name] = {"ok": False, "err": str(e)[:150]}
-            return ytdlp_res, None
+                    payload = json.dumps({"url": v_url}).encode("utf-8")
+                    req = urllib.request.Request(
+                        base,
+                        data=payload,
+                        headers={
+                            "Accept": "application/json",
+                            "Content-Type": "application/json",
+                            "User-Agent": "Mozilla/5.0",
+                        },
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        data = json.loads(r.read().decode())
+                        c_res[base] = {
+                            "status": data.get("status"),
+                            "url": (data.get("url") or "")[:80],
+                        }
+                        if data.get("url") or data.get("status") in ("tunnel", "redirect", "stream"):
+                            return c_res, base, data
+                except Exception as ce:
+                    c_res[base] = str(ce)[:80]
+            return c_res, None, None
 
-        # 1. Test yt-dlp in thread
-        try:
-            res, winner = await asyncio.wait_for(asyncio.to_thread(_test_ytdlp), timeout=15)
-            report["yt_dlp"] = {"winner": winner, "details": res}
-            if winner:
-                return web.json_response({"ok": True, "source": "yt-dlp", "winner": winner, "report": report})
-        except Exception as e:
-            report["yt_dlp"] = {"error": str(e)}
+        # 2. Test Piped instances
+        def _test_pipeds():
+            piped_insts = [
+                "https://api.piped.privacy.com.de",
+                "https://pipedapi.leptons.xyz",
+                "https://piped-api.garudalinux.org",
+                "https://pipedapi.drgns.space",
+                "https://api-piped.mha.fi",
+                "https://piped-api.lunar.icu",
+            ]
+            p_res = {}
+            for base in piped_insts:
+                try:
+                    req = urllib.request.Request(f"{base}/streams/{v_id}", headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        data = json.loads(r.read().decode())
+                        v_streams = data.get("videoStreams", [])
+                        p_res[base] = {"streams": len(v_streams)}
+                        if v_streams:
+                            return p_res, base, v_streams[0].get("url")
+                except Exception as pe:
+                    p_res[base] = str(pe)[:80]
+            return p_res, None, None
 
-        # 2. Test Invidious instances
-        def _test_invidious():
-            inv_res = {}
+        # 3. Test Y2mate
+        def _test_y2mate():
+            y_res = {}
             try:
-                req = urllib.request.Request("https://instances.invidious.io/api/v1/instances.json", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    instances = json.loads(r.read().decode())
-                    live = [item[1].get("uri") for item in instances if isinstance(item, list) and item[1].get("type") == "https" and item[1].get("api") and item[1].get("monitor", {}).get("status") == "200"]
-                    inv_res["live_count"] = len(live)
-                    for uri in live[:5]:
-                        try:
-                            v_req = urllib.request.Request(f"{uri}/api/v1/videos/{v_id}", headers={"User-Agent": "Mozilla/5.0"})
-                            with urllib.request.urlopen(v_req, timeout=5) as vr:
-                                v_data = json.loads(vr.read().decode())
-                                streams = v_data.get("formatStreams", [])
-                                if streams:
-                                    inv_res["winner"] = {
-                                        "uri": uri,
-                                        "title": v_data.get("title"),
-                                        "streams": len(streams),
-                                        "stream_url": streams[0].get("url")[:80]
-                                    }
-                                    return inv_res, uri
-                        except Exception as ie:
-                            inv_res[uri] = str(ie)[:80]
-            except Exception as e:
-                inv_res["fetch_error"] = str(e)
-            return inv_res, None
+                import urllib.parse
+                post_data = urllib.parse.urlencode({
+                    "k_query": v_url,
+                    "k_page": "home",
+                    "hl": "en",
+                    "q_auto": "0"
+                }).encode("utf-8")
+                req = urllib.request.Request(
+                    "https://www.y2mate.com/mates/analyzeV2/ajax",
+                    data=post_data,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "X-Requested-With": "XMLHttpRequest",
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    data = json.loads(r.read().decode())
+                    y_res = {"status": data.get("status"), "mess": data.get("mess"), "title": data.get("title")}
+                    return y_res, True
+            except Exception as ye:
+                y_res["error"] = str(ye)[:120]
+                return y_res, False
 
-        try:
-            inv_res, inv_winner = await asyncio.wait_for(asyncio.to_thread(_test_invidious), timeout=12)
-            report["invidious"] = inv_res
-            if inv_winner:
-                return web.json_response({"ok": True, "source": "invidious", "winner": inv_winner, "report": report})
-        except Exception as e:
-            report["invidious"] = {"error": str(e)}
+        # Execute tests concurrently
+        c_task = asyncio.to_thread(_test_cobalts)
+        p_task = asyncio.to_thread(_test_pipeds)
+        y_task = asyncio.to_thread(_test_y2mate)
 
-        # 3. Test Piped instances
-        def _test_piped():
-            piped_res = {}
-            try:
-                req = urllib.request.Request("https://piped-instances.kavin.rocks/", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    instances = json.loads(r.read().decode())
-                    piped_urls = [inst.get("api_url") for inst in instances if inst.get("api_url")]
-                    piped_res["count"] = len(piped_urls)
-                    for purl in piped_urls[:5]:
-                        try:
-                            v_req = urllib.request.Request(f"{purl}/streams/{v_id}", headers={"User-Agent": "Mozilla/5.0"})
-                            with urllib.request.urlopen(v_req, timeout=5) as vr:
-                                p_data = json.loads(vr.read().decode())
-                                v_streams = p_data.get("videoStreams", [])
-                                if v_streams:
-                                    piped_res["winner"] = {
-                                        "api_url": purl,
-                                        "title": p_data.get("title"),
-                                        "streams": len(v_streams),
-                                        "url": v_streams[0].get("url")[:80]
-                                    }
-                                    return piped_res, purl
-                        except Exception as pe:
-                            piped_res[purl] = str(pe)[:80]
-            except Exception as e:
-                piped_res["fetch_error"] = str(e)
-            return piped_res, None
+        c_done, p_done, y_done = await asyncio.gather(c_task, p_task, y_task, return_exceptions=True)
 
-        try:
-            piped_res, piped_winner = await asyncio.wait_for(asyncio.to_thread(_test_piped), timeout=12)
-            report["piped"] = piped_res
-            if piped_winner:
-                return web.json_response({"ok": True, "source": "piped", "winner": piped_winner, "report": report})
-        except Exception as e:
-            report["piped"] = {"error": str(e)}
-
-        return web.json_response({"ok": False, "report": report})
+        return web.json_response({
+            "cobalt": c_done if not isinstance(c_done, Exception) else str(c_done),
+            "piped": p_done if not isinstance(p_done, Exception) else str(p_done),
+            "y2mate": y_done if not isinstance(y_done, Exception) else str(y_done),
+        })
 
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
