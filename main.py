@@ -120,28 +120,32 @@ async def start_healthcheck_server():
         import yt_dlp
         from bot.services.youtube import _prepare_youtube_cookie_file
         cookie_file = _prepare_youtube_cookie_file()
+        
+        logs = []
+        class LogCapture:
+            def debug(self, msg): logs.append(f"[D] {msg}")
+            def info(self, msg): logs.append(f"[I] {msg}")
+            def warning(self, msg): logs.append(f"[W] {msg}")
+            def error(self, msg): logs.append(f"[E] {msg}")
+
         opts = {
-            "quiet": True,
             "cookiefile": cookie_file,
+            "logger": LogCapture(),
+            "verbose": True,
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(v_url, download=False)
-                fmts = info.get("formats", [])
-                res_list = [f"{f.get('format_id')}: {f.get('ext')} res={f.get('resolution')} acodec={f.get('acodec')}" for f in fmts]
                 return web.json_response({
                     "ok": True,
-                    "cookie_file": bool(cookie_file),
-                    "total_formats": len(fmts),
-                    "sample_formats": res_list[:10],
+                    "title": info.get("title") if info else None,
+                    "logs": logs[:40],
                 })
         except Exception as e:
-            import traceback
             return web.json_response({
                 "ok": False,
-                "cookie_file": bool(cookie_file),
                 "error": str(e),
-                "trace": traceback.format_exc(),
+                "logs": logs[:40],
             })
 
 
