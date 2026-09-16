@@ -319,67 +319,18 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
     queries = _generate_search_queries(artist, title)
     logger.info("Generated %s search queries for '%s - %s': %s", len(queries), artist, title, queries)
 
-    # 2. Priority Tier 1: Smart SoundCloud search with multi-query variations & duration proximity
+    # 2. Priority Tier 1: Fast YouTube Search & Direct Download (2-3 seconds)
     if not raw_file_path or not raw_file_path.exists():
-        sc_search_opts = {
-            **base_opts,
-            "extract_flat": "in_playlist",
-        }
-
-        for q in queries[:2]:
-            sc_query = f"scsearch2:{q}"
-            logger.info("Searching SoundCloud with query: %s", sc_query)
-            try:
-                with yt_dlp.YoutubeDL(sc_search_opts) as sc_ydl:
-                    sc_info = sc_ydl.extract_info(sc_query, download=False)
-                    candidates = sc_info.get("entries") or [sc_info]
-
-                    valid_candidates = []
-                    for entry in candidates:
-                        if not entry:
-                            continue
-                        c_dur = entry.get("duration") or 0
-                        if meta_duration > 60 and c_dur <= 35:
-                            continue
-                        valid_candidates.append(entry)
-
-                    if meta_duration > 0:
-                        valid_candidates.sort(key=lambda x: abs((x.get("duration") or 0) - meta_duration))
-
-                    for entry in valid_candidates:
-                        c_dur = entry.get("duration") or 0
-                        cand_url = entry.get("webpage_url") or entry.get("url")
-                        if not cand_url:
-                            continue
-                        try:
-                            logger.info("Trying SoundCloud candidate: %s (%ss)", entry.get("title"), c_dur)
-                            with yt_dlp.YoutubeDL(base_opts) as sc_dl:
-                                sc_dl.extract_info(cand_url, download=True)
-                            cand_id = entry.get("id")
-                            matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{cand_id}.*"))
-                            if matches and matches[0].exists():
-                                raw_file_path = matches[0]
-                                actual_duration = int(c_dur or meta_duration or 0)
-                                logger.info("Downloaded SoundCloud candidate: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
-                                break
-                        except Exception as cand_err:
-                            all_errors.append(f"SC candidate {entry.get('id')}: {cand_err}")
-                            continue
-
-                if raw_file_path and raw_file_path.exists():
-                    break
-            except Exception as sc_err:
-                all_errors.append(f"SC search '{q}': {sc_err}")
-
-    # 3. Priority Tier 2: YouTube Search fallback
-    if not raw_file_path or not raw_file_path.exists():
-        yt_queries = [f"ytsearch1:{artist} - {title}"]
+        yt_queries = [
+            f"ytsearch1:{artist} {title} audio",
+            f"ytsearch1:{artist} - {title}",
+        ]
         primary_artist = re.split(r"[,&]|\bfeat\b|\bft\b", artist)[0].strip()
-        if primary_artist and primary_artist != artist:
-            yt_queries.append(f"ytsearch1:{primary_artist} - {title}")
+        if primary_artist and primary_artist.lower() != artist.lower():
+            yt_queries.append(f"ytsearch1:{primary_artist} {title}")
 
         for yt_q in yt_queries:
-            logger.info("Searching YouTube for Spotify track fallback: %s", yt_q)
+            logger.info("Searching YouTube for fast track download: %s", yt_q)
             try:
                 with yt_dlp.YoutubeDL(base_opts) as yt_ydl:
                     info = yt_ydl.extract_info(yt_q, download=True)
@@ -400,6 +351,46 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                     break
             except Exception as yt_err:
                 all_errors.append(f"YouTube query '{yt_q}': {yt_err}")
+
+    # 3. Priority Tier 2: SoundCloud search fallback
+    if not raw_file_path or not raw_file_path.exists():
+        sc_search_opts = {
+            **base_opts,
+            "extract_flat": "in_playlist",
+        }
+
+        for q in queries[:2]:
+            sc_query = f"scsearch1:{q}"
+            logger.info("Searching SoundCloud fallback with query: %s", sc_query)
+            try:
+                with yt_dlp.YoutubeDL(sc_search_opts) as sc_ydl:
+                    sc_info = sc_ydl.extract_info(sc_query, download=False)
+                    candidates = sc_info.get("entries") or [sc_info]
+
+                    for entry in candidates:
+                        if not entry:
+                            continue
+                        cand_url = entry.get("webpage_url") or entry.get("url")
+                        if not cand_url:
+                            continue
+                        try:
+                            logger.info("Trying SoundCloud candidate: %s", entry.get("title"))
+                            with yt_dlp.YoutubeDL(base_opts) as sc_dl:
+                                sc_dl.extract_info(cand_url, download=True)
+                            cand_id = entry.get("id")
+                            matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{cand_id}.*"))
+                            if matches and matches[0].exists():
+                                raw_file_path = matches[0]
+                                actual_duration = int(entry.get("duration") or meta_duration or 0)
+                                break
+                        except Exception as cand_err:
+                            all_errors.append(f"SC candidate {entry.get('id')}: {cand_err}")
+                            continue
+
+                if raw_file_path and raw_file_path.exists():
+                    break
+            except Exception as sc_err:
+                all_errors.append(f"SC search '{q}': {sc_err}")
 
     if not raw_file_path or not raw_file_path.exists():
         err_msg = " | ".join(all_errors)

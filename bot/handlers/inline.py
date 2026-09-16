@@ -85,9 +85,9 @@ async def handle_inline_query(inline_query: InlineQuery):
         await inline_query.answer(results=[no_result], cache_time=5, is_personal=True)
         return
 
-    # 3. Pre-cache top 3 results in background for lightning-fast delivery
-    for t in tracks[:3]:
-        asyncio.create_task(get_or_prepare_spotify_mp3(t))
+    # 3. Pre-cache top 1 result in background (allocates 100% CPU/network so it finishes in 2s)
+    if tracks:
+        asyncio.create_task(get_or_prepare_spotify_mp3(tracks[0]))
 
     # 4. Construct direct Audio Results with NO caption (clean native player)
     results = []
