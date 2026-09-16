@@ -32,6 +32,12 @@ class SpotifyTrackMetadata:
     duration: int
     cover_url: str | None
     track_id: str
+    album: str | None = None
+    album_artist: str | None = None
+    genre: str | None = None
+    release_date: str | None = None
+    track_number: str | int | None = None
+    disc_number: str | int | None = None
 
 
 @dataclass
@@ -161,8 +167,21 @@ def _get_spotify_metadata(url_or_id: str) -> SpotifyTrackMetadata:
                         key=lambda x: (x.get("maxWidth") or 0) * (x.get("maxHeight") or 0),
                         reverse=True
                     )[0]
-                    cover_url = best_img.get("url")
-            return SpotifyTrackMetadata(title=title, artist=artist, duration=duration, cover_url=cover_url, track_id=track_id)
+            rel_date = None
+            rel_obj = entity.get("releaseDate")
+            if isinstance(rel_obj, dict) and rel_obj.get("isoString"):
+                rel_date = rel_obj["isoString"][:10]
+            elif isinstance(rel_obj, str):
+                rel_date = rel_obj[:10]
+
+            return SpotifyTrackMetadata(
+                title=title,
+                artist=artist,
+                duration=duration,
+                cover_url=cover_url,
+                track_id=track_id,
+                release_date=rel_date,
+            )
     except Exception as e:
         logger.warning("Failed to fetch Spotify track embed metadata: %s", e)
 
@@ -227,7 +246,7 @@ def _get_spotify_album_sync(url: str) -> SpotifyAlbum:
     # Track list
     raw_tracks = entity.get("trackList", [])
     tracks: list[SpotifyTrackMetadata] = []
-    for item in raw_tracks:
+    for idx, item in enumerate(raw_tracks, start=1):
         if not item:
             continue
         t_uri = item.get("uri") or ""
@@ -243,6 +262,10 @@ def _get_spotify_album_sync(url: str) -> SpotifyAlbum:
                 duration=t_duration,
                 cover_url=cover_url,
                 track_id=t_id,
+                album=album_name,
+                album_artist=album_artist,
+                track_number=str(idx),
+                disc_number="1",
             )
         )
 
@@ -261,14 +284,176 @@ async def get_spotify_album(url: str) -> SpotifyAlbum:
     return await asyncio.to_thread(_get_spotify_album_sync, url)
 
 
+def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
+    """
+    Enrich track metadata with complete album, album_artist, genre, release_date,
+    track_number, and disc_number for high-fidelity ID3 tagging.
+    """
+    if meta.album and meta.genre and meta.release_date and meta.album_artist and meta.track_number:
+        return meta
+
+    album = meta.album
+    album_artist = meta.album_artist
+    genre = meta.genre
+    release_date = meta.release_date
+    track_number = meta.track_number
+    disc_number = meta.disc_number
+
+    # 1. Deezer direct track lookup if ID starts with dz_
+    if meta.track_id and meta.track_id.startswith("dz_") and len(meta.track_id) > 3:
+        dz_id = meta.track_id[3:]
+        try:
+            req = urllib.request.Request(f"https://api.deezer.com/track/{dz_id}", headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                t = json.loads(r.read().decode("utf-8"))
+                album = album or t.get("album", {}).get("title")
+                album_artist = album_artist or t.get("album", {}).get("artist", {}).get("name") or t.get("artist", {}).get("name")
+                release_date = release_date or t.get("release_date")
+                track_number = track_number or t.get("track_position")
+                disc_number = disc_number or t.get("disk_number")
+                al_id = t.get("album", {}).get("id")
+                if al_id and not genre:
+                    try:
+                        al_req = urllib.request.Request(f"https://api.deezer.com/album/{al_id}", headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(al_req, timeout=2) as al_r:
+                            al_data = json.loads(al_r.read().decode("utf-8"))
+                            genres = [g["name"] for g in al_data.get("genres", {}).get("data", []) if g.get("name")]
+                            if genres:
+                                genre = ", ".join(genres)
+                    except Exception:
+                        pass
+        except Exception as de:
+            logger.debug("Deezer track lookup failed: %s", de)
+
+    # 2. Deezer search by artist + clean title
+    if not album or not genre or not release_date:
+        try:
+            import urllib.parse
+            clean_t = _clean_title(meta.title)
+            q = f"{meta.artist} {clean_t}".strip()
+            url = f"https://api.deezer.com/search?q={urllib.parse.quote(q)}&limit=1"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                d = json.loads(r.read().decode("utf-8"))
+                items = d.get("data", [])
+                if items:
+                    t = items[0]
+                    dz_id = t.get("id")
+                    if dz_id:
+                        t_req = urllib.request.Request(f"https://api.deezer.com/track/{dz_id}", headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(t_req, timeout=3) as tr:
+                            t_info = json.loads(tr.read().decode("utf-8"))
+                            album = album or t_info.get("album", {}).get("title")
+                            album_artist = album_artist or t_info.get("album", {}).get("artist", {}).get("name") or t_info.get("artist", {}).get("name")
+                            release_date = release_date or t_info.get("release_date")
+                            track_number = track_number or t_info.get("track_position")
+                            disc_number = disc_number or t_info.get("disk_number")
+                            al_id = t_info.get("album", {}).get("id")
+                            if al_id and not genre:
+                                try:
+                                    al_req = urllib.request.Request(f"https://api.deezer.com/album/{al_id}", headers={"User-Agent": "Mozilla/5.0"})
+                                    with urllib.request.urlopen(al_req, timeout=2) as al_r:
+                                        al_data = json.loads(al_r.read().decode("utf-8"))
+                                        genres = [g["name"] for g in al_data.get("genres", {}).get("data", []) if g.get("name")]
+                                        if genres:
+                                            genre = ", ".join(genres)
+                                except Exception:
+                                    pass
+        except Exception as se:
+            logger.debug("Deezer search enrichment failed: %s", se)
+
+    # 3. iTunes search fallback
+    if not album or not genre or not release_date:
+        try:
+            import urllib.parse
+            clean_t = _clean_title(meta.title)
+            q = f"{meta.artist} {clean_t}".strip()
+            url = f"https://itunes.apple.com/search?term={urllib.parse.quote(q)}&entity=song&limit=1"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                d = json.loads(r.read().decode("utf-8"))
+                results = d.get("results", [])
+                if results:
+                    it = results[0]
+                    album = album or it.get("collectionName")
+                    album_artist = album_artist or it.get("artistName")
+                    genre = genre or it.get("primaryGenreName")
+                    raw_date = it.get("releaseDate")
+                    if raw_date and not release_date:
+                        release_date = raw_date[:10]
+                    track_number = track_number or it.get("trackNumber")
+                    disc_number = disc_number or it.get("discNumber")
+        except Exception as ie:
+            logger.debug("iTunes search enrichment failed: %s", ie)
+
+    # 4. Intelligent defaults ensuring NO field is ever empty in Tag Editor
+    primary_artist = re.split(r"[,&]|\bfeat\b|\bft\b", meta.artist, flags=re.IGNORECASE)[0].strip() or meta.artist
+    if not album:
+        album = f"{meta.title} - Single"
+    if not album_artist:
+        album_artist = primary_artist
+    if not genre:
+        rap_keywords = ["rap", "trap", "hip hop", "diss", "beat", "vinak", "flame", "shayea", "hichkas", "yas", "hooshmand", "pishro", "zedbazi", "khalse", "leito", "chvrsi", "catchybeatz"]
+        combined_str = f"{meta.artist} {meta.title}".lower()
+        if any(kw in combined_str for kw in rap_keywords):
+            genre = "Hip-Hop/Rap"
+        else:
+            genre = "Pop"
+    if not release_date:
+        release_date = "2024-01-01"
+    if not track_number:
+        track_number = "1/1"
+    if not disc_number:
+        disc_number = "1/1"
+
+    enriched_meta = SpotifyTrackMetadata(
+        title=meta.title,
+        artist=meta.artist,
+        duration=meta.duration,
+        cover_url=meta.cover_url,
+        track_id=meta.track_id,
+        album=album,
+        album_artist=album_artist,
+        genre=genre,
+        release_date=str(release_date),
+        track_number=str(track_number),
+        disc_number=str(disc_number),
+    )
+    _cache_track_meta(enriched_meta)
+    return enriched_meta
+
+
 def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover: str | None = None) -> SpotifyTrack:
-    """Synchronously download and encode a track based on its metadata."""
+    """Synchronously download and encode a track based on its metadata with full ID3v2.3 tags."""
+    meta = _enrich_track_metadata(meta)
     title = meta.title
     artist = meta.artist
+    album = meta.album or f"{title} - Single"
+    album_artist = meta.album_artist or artist
+    genre = meta.genre or "Pop"
+    release_date = meta.release_date or "2024-01-01"
+    track_number = str(meta.track_number or "1/1")
+    disc_number = str(meta.disc_number or "1/1")
     meta_duration = meta.duration
     cover_url = meta.cover_url or fallback_cover
     track_id = meta.track_id
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+    year_match = re.search(r"\b(19\d\d|20\d\d)\b", str(release_date))
+    year_val = year_match.group(1) if year_match else "2024"
+
+    meta_args = [
+        "-id3v2_version", "3",
+        "-metadata", f"title={title}",
+        "-metadata", f"artist={artist}",
+        "-metadata", f"album={album}",
+        "-metadata", f"album_artist={album_artist}",
+        "-metadata", f"genre={genre}",
+        "-metadata", f"date={release_date}",
+        "-metadata", f"year={year_val}",
+        "-metadata", f"track={track_number}",
+        "-metadata", f"disc={disc_number}",
+    ]
 
     # 1. Download cover art thumbnail
     thumb_path = None
@@ -323,13 +508,16 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                                 f_cmd = [
                                     ffmpeg_exe, "-y", "-i", str(temp_p), "-i", str(thumb_path),
                                     "-c:a", "copy", "-map", "0:a:0", "-map", "1:v:0", "-c:v", "copy",
-                                    "-id3v2_version", "3", "-metadata", f"title={title}", "-metadata", f"artist={artist}",
+                                    "-metadata:s:v", "title=Album cover",
+                                    "-metadata:s:v", "comment=Cover (front)",
+                                    *meta_args,
                                     str(fast_backup_path)
                                 ]
                             else:
                                 f_cmd = [
                                     ffmpeg_exe, "-y", "-i", str(temp_p),
-                                    "-c:a", "copy", "-metadata", f"title={title}", "-metadata", f"artist={artist}",
+                                    "-c:a", "copy",
+                                    *meta_args,
                                     str(fast_backup_path)
                                 ]
                             subprocess.run(f_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
@@ -422,9 +610,9 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                 "-map", "0:a:0",
                 "-map", "1:v:0",
                 "-c:v", "copy",
-                "-id3v2_version", "3",
-                "-metadata", f"title={title}",
-                "-metadata", f"artist={artist}",
+                "-metadata:s:v", "title=Album cover",
+                "-metadata:s:v", "comment=Cover (front)",
+                *meta_args,
                 str(final_audio_path),
             ])
         else:
@@ -433,8 +621,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                 "-b:a", "256k",
                 "-threads", "0",
                 "-map", "0:a:0",
-                "-metadata", f"title={title}",
-                "-metadata", f"artist={artist}",
+                *meta_args,
                 str(final_audio_path),
             ])
 
@@ -558,6 +745,12 @@ def get_cached_track_meta(track_id: str) -> SpotifyTrackMetadata | None:
                 duration=db_data["duration"],
                 cover_url=db_data["cover_url"],
                 track_id=track_id,
+                album=db_data.get("album"),
+                album_artist=db_data.get("album_artist"),
+                genre=db_data.get("genre"),
+                release_date=db_data.get("release_date"),
+                track_number=db_data.get("track_number"),
+                disc_number=db_data.get("disc_number"),
             )
             _INLINE_TRACK_CACHE[track_id] = meta
             return meta
@@ -575,14 +768,37 @@ def get_cached_track_meta(track_id: str) -> SpotifyTrackMetadata | None:
                 t_name = _clean_title(data.get("title") or "Music Track")
                 a_name = data.get("artist", {}).get("name") or "Artist"
                 dur = data.get("duration") or 0
-                album = data.get("album", {})
-                cover_url = album.get("cover_big") or album.get("cover_medium")
+                album_obj = data.get("album", {})
+                cover_url = album_obj.get("cover_big") or album_obj.get("cover_medium")
+                al_name = album_obj.get("title")
+                al_artist = album_obj.get("artist", {}).get("name") or a_name
+                rel_date = data.get("release_date")
+                trk_num = data.get("track_position")
+                dsc_num = data.get("disk_number")
+                genre = None
+                al_id = album_obj.get("id")
+                if al_id:
+                    try:
+                        al_req = urllib.request.Request(f"https://api.deezer.com/album/{al_id}", headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(al_req, timeout=3) as al_resp:
+                            al_data = json.loads(al_resp.read().decode("utf-8"))
+                            genres = [g["name"] for g in al_data.get("genres", {}).get("data", []) if g.get("name")]
+                            if genres:
+                                genre = ", ".join(genres)
+                    except Exception:
+                        pass
                 meta = SpotifyTrackMetadata(
                     title=t_name,
                     artist=a_name,
                     duration=dur,
                     cover_url=cover_url,
                     track_id=track_id,
+                    album=al_name,
+                    album_artist=al_artist,
+                    genre=genre,
+                    release_date=rel_date,
+                    track_number=str(trk_num or 1),
+                    disc_number=str(dsc_num or 1),
                 )
                 _cache_track_meta(meta)
                 return meta
@@ -607,6 +823,12 @@ def _cache_track_meta(meta: SpotifyTrackMetadata):
                 artist=meta.artist,
                 duration=meta.duration,
                 cover_url=meta.cover_url,
+                album=meta.album,
+                album_artist=meta.album_artist,
+                genre=meta.genre,
+                release_date=meta.release_date,
+                track_number=str(meta.track_number) if meta.track_number is not None else None,
+                disc_number=str(meta.disc_number) if meta.disc_number is not None else None,
             )
         except Exception as e:
             logger.warning("Failed to persist track meta to DB: %s", e)
@@ -654,6 +876,12 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                     dur = int((t.get("duration_ms") or 0) / 1000)
                     imgs = t.get("album", {}).get("images", [])
                     cover = imgs[0].get("url") if imgs else None
+                    album_obj = t.get("album", {})
+                    al_name = album_obj.get("name")
+                    al_artist = " & ".join([a["name"] for a in album_obj.get("artists", []) if a.get("name")]) or artists
+                    rel_date = album_obj.get("release_date")
+                    trk_num = t.get("track_number")
+                    dsc_num = t.get("disc_number")
                     dedup_key = (title.lower(), artists.lower())
                     if dedup_key not in seen:
                         seen.add(dedup_key)
@@ -663,6 +891,11 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                             duration=dur,
                             cover_url=cover,
                             track_id=t_id,
+                            album=al_name,
+                            album_artist=al_artist,
+                            release_date=rel_date,
+                            track_number=str(trk_num or 1),
+                            disc_number=str(dsc_num or 1),
                         )
                         results.append(m)
                         _cache_track_meta(m)
@@ -688,6 +921,7 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                         continue
                     album = item.get("album", {})
                     cover_url = album.get("cover_big") or album.get("cover_medium")
+                    al_name = album.get("title")
                     dur = item.get("duration") or 0
                     t_id = f"dz_{item.get('id')}"
                     dedup_key = (t_name.lower(), a_name.lower())
@@ -699,6 +933,8 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                             duration=dur,
                             cover_url=cover_url,
                             track_id=t_id,
+                            album=al_name,
+                            album_artist=a_name,
                         )
                         results.append(m)
                         _cache_track_meta(m)
@@ -745,6 +981,13 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                     cover_url = raw_art.replace("100x100bb", "600x600bb") if raw_art else None
                     dur = int((item.get("trackTimeMillis") or 0) / 1000)
                     t_id = f"it_{item.get('trackId')}"
+                    al_name = item.get("collectionName")
+                    al_artist = item.get("artistName") or a_name
+                    genre = item.get("primaryGenreName")
+                    raw_date = item.get("releaseDate")
+                    rel_date = raw_date[:10] if raw_date else None
+                    trk_num = item.get("trackNumber")
+                    dsc_num = item.get("discNumber")
                     dedup_key = (t_name.lower(), a_name.lower())
                     if dedup_key not in seen:
                         seen.add(dedup_key)
@@ -754,6 +997,12 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                             duration=dur,
                             cover_url=cover_url,
                             track_id=t_id,
+                            album=al_name,
+                            album_artist=al_artist,
+                            genre=genre,
+                            release_date=rel_date,
+                            track_number=str(trk_num or 1),
+                            disc_number=str(dsc_num or 1),
                         )
                         results.append(m)
                         _cache_track_meta(m)

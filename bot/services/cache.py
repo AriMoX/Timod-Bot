@@ -31,10 +31,21 @@ def init_db():
                 artist TEXT,
                 duration INTEGER,
                 cover_url TEXT,
+                album TEXT,
+                album_artist TEXT,
+                genre TEXT,
+                release_date TEXT,
+                track_number TEXT,
+                disc_number TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        for col in ["album", "album_artist", "genre", "release_date", "track_number", "disc_number"]:
+            try:
+                cursor.execute(f"ALTER TABLE track_meta_cache ADD COLUMN {col} TEXT")
+            except Exception:
+                pass
         conn.commit()
 
 
@@ -83,23 +94,47 @@ def save_cached_audio(track_id: str, file_id: str, title: str, artist: str, dura
         logger.warning("Failed to save cached audio for %s: %s", track_id, e)
 
 
-def save_track_meta_db(track_id: str, title: str, artist: str, duration: int, cover_url: str | None):
+def save_track_meta_db(
+    track_id: str,
+    title: str,
+    artist: str,
+    duration: int,
+    cover_url: str | None,
+    album: str | None = None,
+    album_artist: str | None = None,
+    genre: str | None = None,
+    release_date: str | None = None,
+    track_number: str | None = None,
+    disc_number: str | None = None,
+):
     """Persist track metadata in SQLite so it survives restarts."""
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO track_meta_cache (track_id, title, artist, duration, cover_url)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO track_meta_cache (
+                    track_id, title, artist, duration, cover_url,
+                    album, album_artist, genre, release_date, track_number, disc_number
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(track_id) DO UPDATE SET
                     title=excluded.title,
                     artist=excluded.artist,
                     duration=excluded.duration,
                     cover_url=excluded.cover_url,
+                    album=excluded.album,
+                    album_artist=excluded.album_artist,
+                    genre=excluded.genre,
+                    release_date=excluded.release_date,
+                    track_number=excluded.track_number,
+                    disc_number=excluded.disc_number,
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (track_id, title, artist, duration, cover_url),
+                (
+                    track_id, title, artist, duration, cover_url,
+                    album, album_artist, genre, release_date, str(track_number or ""), str(disc_number or "")
+                ),
             )
             conn.commit()
     except Exception as e:
@@ -112,7 +147,11 @@ def get_track_meta_db(track_id: str) -> dict | None:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT title, artist, duration, cover_url FROM track_meta_cache WHERE track_id = ?",
+                """
+                SELECT title, artist, duration, cover_url,
+                       album, album_artist, genre, release_date, track_number, disc_number
+                FROM track_meta_cache WHERE track_id = ?
+                """,
                 (track_id,),
             )
             row = cursor.fetchone()
@@ -122,6 +161,12 @@ def get_track_meta_db(track_id: str) -> dict | None:
                     "artist": row[1],
                     "duration": row[2],
                     "cover_url": row[3],
+                    "album": row[4],
+                    "album_artist": row[5],
+                    "genre": row[6],
+                    "release_date": row[7],
+                    "track_number": row[8],
+                    "disc_number": row[9],
                 }
     except Exception as e:
         logger.warning("Failed to get track meta for %s: %s", track_id, e)
