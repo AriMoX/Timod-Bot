@@ -116,48 +116,33 @@ async def start_healthcheck_server():
 
     async def handle_debug_yt(request):
         v_url = request.query.get("url", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        v_id = "dQw4w9WgXcQ"
-        if "v=" in v_url:
-            v_id = v_url.split("v=")[1].split("&")[0]
-        elif "youtu.be/" in v_url:
-            v_id = v_url.split("youtu.be/")[1].split("?")[0]
-        elif "shorts/" in v_url:
-            v_id = v_url.split("shorts/")[1].split("?")[0]
-
-        import urllib.request
-        import ssl
-        ctx = ssl._create_unverified_context()
-        candidates = [
-            "https://inv.nadeko.net",
-            "https://invidious.nerdvpn.de",
-            "https://invidious.privacydev.net",
-            "https://inv.tux.pizza",
-            "https://invidious.jing.rocks",
-            "https://iv.ggtyler.dev",
-            "https://yt.artemislena.eu",
-            "https://invidious.projectsegfau.lt",
-            "https://invidious.flokinet.to",
-        ]
-        results = {}
-        for base in candidates:
-            try:
-                req = urllib.request.Request(f"{base}/api/v1/videos/{v_id}", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=3, context=ctx) as r:
-                    data = json.loads(r.read().decode())
-                    streams = data.get("formatStreams", [])
-                    if streams:
-                        results["winner"] = {
-                            "instance": base,
-                            "title": data.get("title"),
-                            "stream_url": streams[0].get("url")[:80],
-                            "quality": streams[0].get("quality"),
-                        }
-                        break
-                    results[base] = f"No streams (title: {data.get('title')})"
-            except Exception as e:
-                results[base] = str(e)[:60]
-
-        return web.json_response({"v_id": v_id, "results": results})
+        import json
+        import yt_dlp
+        from bot.services.youtube import _prepare_youtube_cookie_file
+        cookie_file = _prepare_youtube_cookie_file()
+        opts = {
+            "quiet": True,
+            "cookiefile": cookie_file,
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(v_url, download=False)
+                fmts = info.get("formats", [])
+                res_list = [f"{f.get('format_id')}: {f.get('ext')} res={f.get('resolution')} acodec={f.get('acodec')}" for f in fmts]
+                return web.json_response({
+                    "ok": True,
+                    "cookie_file": bool(cookie_file),
+                    "total_formats": len(fmts),
+                    "sample_formats": res_list[:10],
+                })
+        except Exception as e:
+            import traceback
+            return web.json_response({
+                "ok": False,
+                "cookie_file": bool(cookie_file),
+                "error": str(e),
+                "trace": traceback.format_exc(),
+            })
 
 
     app.router.add_get("/", handle_ping)
