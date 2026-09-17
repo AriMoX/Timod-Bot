@@ -218,13 +218,13 @@ async def get_movie_details(url: str) -> Optional[dict]:
                         "size": None,
                     })
 
-        # Pre-fetch sizes for the top movie downloads concurrently (up to 8 items, 2.5s max)
+        # Pre-fetch sizes for movie downloads concurrently
         if movie_downloads:
             try:
-                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as size_session:
-                    tasks = [fetch_link_size(size_session, item["url"]) for item in movie_downloads[:8]]
+                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False), headers=headers) as size_session:
+                    tasks = [fetch_link_size(size_session, item["url"]) for item in movie_downloads[:12]]
                     sizes = await asyncio.gather(*tasks, return_exceptions=True)
-                    for item, sz in zip(movie_downloads[:8], sizes):
+                    for item, sz in zip(movie_downloads[:12], sizes):
                         if isinstance(sz, str):
                             item["size"] = sz
             except Exception as se:
