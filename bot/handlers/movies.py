@@ -45,10 +45,37 @@ def _is_url(text: str) -> bool:
     return bool(re.search(r"https?://", text, re.IGNORECASE))
 
 
+MOVIE_BUTTON_TEXTS = {
+    "🎬 جستجوی فیلم و سریال",
+    "جستجوی فیلم و سریال",
+    "جست و جوی فیلم و سریال",
+    "🎬 جست و جوی فیلم و سریال",
+    "فیلم و سریال",
+}
+
+MUSIC_BUTTON_TEXTS = {
+    "🎵 جستجوی موزیک",
+    "جستجوی موزیک",
+    "جست و جوی موزیک",
+    "🎵 جست و جوی موزیک",
+    "موزیک",
+    "جستجوی آهنگ",
+    "جست و جوی آهنگ",
+}
+
+CANCEL_BUTTON_TEXTS = {
+    "❌ انصراف / بازگشت به منوی اصلی",
+    "انصراف",
+    "لغو",
+    "بازگشت",
+    "منوی اصلی",
+}
+
+
 # -------------------------------------------------------------
 # 1. Main Menu Buttons & Commands Triggering FSM States
 # -------------------------------------------------------------
-@router.message(F.text == "🎬 جستجوی فیلم و سریال")
+@router.message(F.text.func(lambda t: bool(t and t.strip() in MOVIE_BUTTON_TEXTS)))
 @router.message(Command("movie"))
 @router.message(Command("film"))
 @router.message(Command("serial"))
@@ -75,7 +102,7 @@ async def start_movie_search(message: Message, state: FSMContext):
     await message.reply(prompt, reply_markup=CANCEL_KEYBOARD, parse_mode="HTML")
 
 
-@router.message(F.text == "🎵 جستجوی موزیک")
+@router.message(F.text.func(lambda t: bool(t and t.strip() in MUSIC_BUTTON_TEXTS)))
 @router.message(Command("music"))
 @router.message(Command("song"))
 async def start_music_search(message: Message, state: FSMContext):
@@ -109,7 +136,7 @@ async def start_music_search(message: Message, state: FSMContext):
     await message.answer("یا روی دکمه زیر بزنید تا پنجره اینلاین باز شود:", reply_markup=inline_btn)
 
 
-@router.message(F.text == "❌ انصراف / بازگشت به منوی اصلی")
+@router.message(F.text.func(lambda t: bool(t and t.strip() in CANCEL_BUTTON_TEXTS)))
 @router.message(Command("cancel"))
 async def handle_cancel_search(message: Message, state: FSMContext):
     """Cancel any active search state and return to main menu."""
@@ -124,13 +151,24 @@ async def handle_cancel_search(message: Message, state: FSMContext):
 async def handle_movie_query_input(message: Message, state: FSMContext):
     """Handle text input when specifically waiting for a movie title."""
     text = message.text.strip()
-    if text == "❌ انصراف / بازگشت به منوی اصلی":
+    if text in CANCEL_BUTTON_TEXTS:
         await state.clear()
         await message.answer("✅ به منوی اصلی بازگشتید:", reply_markup=MAIN_MENU_KEYBOARD)
         return
 
+    if text in MUSIC_BUTTON_TEXTS:
+        await start_music_search(message, state)
+        return
+
+    if text in MOVIE_BUTTON_TEXTS:
+        await message.reply(
+            "🎬 لطفاً نام فیلم یا سریال مورد نظر خود را ارسال کنید:\n*(مثلاً: Inception یا بتمن)*",
+            reply_markup=CANCEL_KEYBOARD,
+            parse_mode="HTML",
+        )
+        return
+
     await state.clear()
-    await message.answer("منوی اصلی فعال شد.", reply_markup=MAIN_MENU_KEYBOARD)
     await _execute_f2m_search(message, text)
 
 
@@ -138,13 +176,24 @@ async def handle_movie_query_input(message: Message, state: FSMContext):
 async def handle_music_query_input(message: Message, state: FSMContext):
     """Handle text input when specifically waiting for a music title."""
     text = message.text.strip()
-    if text == "❌ انصراف / بازگشت به منوی اصلی":
+    if text in CANCEL_BUTTON_TEXTS:
         await state.clear()
         await message.answer("✅ به منوی اصلی بازگشتید:", reply_markup=MAIN_MENU_KEYBOARD)
         return
 
+    if text in MOVIE_BUTTON_TEXTS:
+        await start_movie_search(message, state)
+        return
+
+    if text in MUSIC_BUTTON_TEXTS:
+        await message.reply(
+            "🎵 لطفاً نام آهنگ یا خواننده مورد نظر خود را ارسال کنید:\n*(مثلاً: Without Me یا شادمهر)*",
+            reply_markup=CANCEL_KEYBOARD,
+            parse_mode="HTML",
+        )
+        return
+
     await state.clear()
-    await message.answer("منوی اصلی فعال شد.", reply_markup=MAIN_MENU_KEYBOARD)
     await _execute_music_search(message, text)
 
 
@@ -152,9 +201,19 @@ async def handle_music_query_input(message: Message, state: FSMContext):
 # 3. Fallback Handler for Raw Text when No State is Active
 # -------------------------------------------------------------
 @router.message(F.text & ~F.text.startswith("/"))
-async def handle_unspecified_text(message: Message):
+async def handle_unspecified_text(message: Message, state: FSMContext):
     """When user sends raw text without selecting a button, ask whether it is Movie or Music."""
     text = (message.text or "").strip()
+    if text in MOVIE_BUTTON_TEXTS:
+        await start_movie_search(message, state)
+        return
+    if text in MUSIC_BUTTON_TEXTS:
+        await start_music_search(message, state)
+        return
+    if text in CANCEL_BUTTON_TEXTS:
+        await handle_cancel_search(message, state)
+        return
+
     if _is_url(text) or len(text) < 2 or len(text) > 100:
         return
 
@@ -227,7 +286,11 @@ async def handle_choice_cancel(callback: CallbackQuery):
 # -------------------------------------------------------------
 async def _execute_f2m_search(message: Message, query: str):
     """Execute search on Film2Media and display results with interactive buttons."""
-    status_msg = await message.reply(f"🔎 در حال جستجوی «<b>{html.escape(query)}</b>» در فیلم‌تو‌مدیا...", parse_mode="HTML")
+    status_msg = await message.reply(
+        f"🔎 در حال جستجوی «<b>{html.escape(query)}</b>» در فیلم‌تو‌مدیا...",
+        reply_markup=MAIN_MENU_KEYBOARD,
+        parse_mode="HTML",
+    )
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
     try:
@@ -444,7 +507,11 @@ async def handle_movie_download_click(callback: CallbackQuery):
 # -------------------------------------------------------------
 async def _execute_music_search(message: Message, query: str):
     """Search music catalog and deliver the audio with download buttons."""
-    status_msg = await message.reply(f"🎵 در حال جستجوی قطعه «<b>{html.escape(query)}</b>»...", parse_mode="HTML")
+    status_msg = await message.reply(
+        f"🎵 در حال جستجوی قطعه «<b>{html.escape(query)}</b>»...",
+        reply_markup=MAIN_MENU_KEYBOARD,
+        parse_mode="HTML",
+    )
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
 
     try:

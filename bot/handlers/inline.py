@@ -133,59 +133,7 @@ async def handle_inline_query(inline_query: InlineQuery):
 
 
 # -------------------------------------------------------------
-# 2. In-Chat Text Search Handler (When user sends music title directly in chat)
-# -------------------------------------------------------------
-@router.message(F.text, ~F.text.startswith("/"))
-async def handle_in_chat_text_search(message: Message):
-    text = (message.text or "").strip()
-
-    # Ignore links (links are handled by downloader_router)
-    if re.search(r"https?://", text):
-        return
-
-    # Clean bot username if user typed e.g. "@Timod27_Bot eminem"
-    cleaned_query = re.sub(r"@\w+_bot\s*", "", text, flags=re.IGNORECASE).strip()
-    if not cleaned_query:
-        return
-
-    status_msg = await message.reply(
-        f"🔍 در حال جستجوی موزیک در اسپاتیفای برای <b>{html.escape(cleaned_query)}</b>...",
-        parse_mode="HTML",
-    )
-    tracks = await search_spotify(cleaned_query, limit=5)
-
-    if not tracks:
-        await status_msg.edit_text(
-            f"❌ هیچ آهنگی در اسپاتیفای برای <b>{html.escape(cleaned_query)}</b> یافت نشد.",
-            parse_mode="HTML",
-        )
-        return
-
-    buttons = []
-    text_lines = [
-        f"🎧 <b>نتایج اسپاتیفای برای:</b> <code>{html.escape(cleaned_query)}</code>\n",
-        "برای دانلود هر قطعه با بالاترین کیفیت روی دکمه زیر بزنید:\n"
-    ]
-
-    for idx, track in enumerate(tracks, start=1):
-        minutes = track.duration // 60
-        seconds = track.duration % 60
-        dur = f"{minutes:02d}:{seconds:02d}" if track.duration > 0 else ""
-        text_lines.append(f"{idx}. 🎵 <b>{html.escape(track.title)}</b> - {html.escape(track.artist)} <code>({dur})</code>")
-
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"📥 {idx}. {track.title[:30]}",
-                callback_data=f"sp_{track.track_id}",
-            )
-        ])
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await status_msg.edit_text("\n".join(text_lines), reply_markup=keyboard, parse_mode="HTML")
-
-
-# -------------------------------------------------------------
-# 3. Callback Query Handler (When user clicks a song from search list)
+# 2. Callback Query Handler (When user clicks a song from search list or inline)
 # -------------------------------------------------------------
 @router.callback_query(F.data.startswith("sp_") | F.data.startswith("play_"))
 async def handle_play_callback(callback: CallbackQuery):

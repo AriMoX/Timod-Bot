@@ -592,8 +592,8 @@ async def main():
     dp.include_router(common_router)
     dp.include_router(video_note_router)
     dp.include_router(downloader_router)
-    dp.include_router(inline_router)
     dp.include_router(movies_router)
+    dp.include_router(inline_router)
 
     # Test bot connection
     me = await bot.get_me()
