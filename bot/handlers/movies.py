@@ -344,6 +344,10 @@ async def _execute_f2m_search(message: Message, query: str):
             ])
             text_lines.append(f"{idx}️⃣ <b>{html.escape(item['title'])}</b>{year_str}{rating_str}")
 
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
+            InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+        ])
         markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         await message.answer("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
 
@@ -452,6 +456,7 @@ async def _show_movie_details(
         # Button to deliver all links in one single message
         all_id = F2MLinkStore.save_link({
             "title": title,
+            "movie_url": movie_url,
             "downloads": downloads,
         })
         keyboard_rows.append([
@@ -464,6 +469,7 @@ async def _show_movie_details(
                 if ep_list:
                     season_id = F2MLinkStore.save_link({
                         "title": title,
+                        "movie_url": movie_url,
                         "season_name": s_name,
                         "quality": q_tag,
                         "episodes": ep_list,
@@ -479,6 +485,11 @@ async def _show_movie_details(
         keyboard_rows.append([
             InlineKeyboardButton(text="⚠️ در حال حاضر لینکی برای این اثر موجود نیست", callback_data="noop")
         ])
+
+    keyboard_rows.append([
+        InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
+        InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+    ])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
@@ -549,13 +560,20 @@ async def handle_movie_download_click(callback: CallbackQuery):
     )
 
     btn_label = f"⬇️ شروع دانلود مستقیم ({size_str})" if item.get("size") else "⬇️ شروع دانلود مستقیم"
-    download_markup = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=btn_label, url=url),
-            ]
+    nav_buttons = [
+        [
+            InlineKeyboardButton(text=btn_label, url=url),
         ]
-    )
+    ]
+    if item.get("movie_url"):
+        nav_buttons.append([
+            InlineKeyboardButton(text="🔙 بازگشت به لیست کیفیت‌ها", callback_data=f"f2m_back_to:{short_id}"),
+        ])
+    nav_buttons.append([
+        InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
+        InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+    ])
+    download_markup = InlineKeyboardMarkup(inline_keyboard=nav_buttons)
 
     await callback.message.answer(
         text=msg_text,
@@ -592,13 +610,25 @@ async def handle_movie_all_links(callback: CallbackQuery):
             f"<code>{d['url']}</code>\n"
         )
 
+    nav_buttons = []
+    if item.get("movie_url"):
+        nav_buttons.append([
+            InlineKeyboardButton(text="🔙 بازگشت به مشخصات اثر", callback_data=f"f2m_back_to:{all_id}"),
+        ])
+    nav_buttons.append([
+        InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
+        InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+    ])
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=nav_buttons)
+
     full_text = "\n".join(lines)
     if len(full_text) > 3900:
         chunks = [full_text[i:i+3800] for i in range(0, len(full_text), 3800)]
-        for chunk in chunks:
-            await callback.message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
+        for idx, chunk in enumerate(chunks):
+            m = nav_markup if idx == len(chunks) - 1 else None
+            await callback.message.answer(chunk, reply_markup=m, parse_mode="HTML", disable_web_page_preview=True)
     else:
-        await callback.message.answer(full_text, parse_mode="HTML", disable_web_page_preview=True)
+        await callback.message.answer(full_text, reply_markup=nav_markup, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @router.callback_query(F.data.startswith("f2m_season:"))
@@ -629,18 +659,74 @@ async def handle_series_season(callback: CallbackQuery):
             f"<code>{ep['url']}</code>\n"
         )
 
+    nav_buttons = []
+    if item.get("movie_url"):
+        nav_buttons.append([
+            InlineKeyboardButton(text="🔙 بازگشت به لیست فصل‌ها", callback_data=f"f2m_back_to:{season_id}"),
+        ])
+    nav_buttons.append([
+        InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
+        InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+    ])
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=nav_buttons)
+
     full_text = "\n".join(lines)
     if len(full_text) > 3900:
         chunks = [full_text[i:i+3800] for i in range(0, len(full_text), 3800)]
-        for chunk in chunks:
-            await callback.message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
+        for idx, chunk in enumerate(chunks):
+            m = nav_markup if idx == len(chunks) - 1 else None
+            await callback.message.answer(chunk, reply_markup=m, parse_mode="HTML", disable_web_page_preview=True)
     else:
-        await callback.message.answer(full_text, parse_mode="HTML", disable_web_page_preview=True)
+        await callback.message.answer(full_text, reply_markup=nav_markup, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "noop")
 async def handle_noop(callback: CallbackQuery):
     await callback.answer()
+
+
+@router.callback_query(F.data == "f2m_main_menu")
+async def handle_f2m_main_menu(callback: CallbackQuery, state: FSMContext):
+    """Handle inline button 'منوی اصلی': return to main menu and restore bottom reply keyboard."""
+    await state.clear()
+    await callback.answer("🏠 بازگشت به منوی اصلی")
+    await callback.message.answer(
+        "🏠 <b>منوی اصلی ربات:</b>\n\n"
+        "یکی از گزینه‌های زیر را برای جستجو یا دانلود انتخاب کنید:",
+        reply_markup=MAIN_MENU_KEYBOARD,
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "f2m_new_search")
+async def handle_f2m_new_search(callback: CallbackQuery, state: FSMContext):
+    """Handle inline button 'جستجوی یک اثر دیگر': prompt user for a new movie or series title."""
+    await state.set_state(SearchStates.waiting_for_movie)
+    await callback.answer("🎬 جستجوی اثر جدید")
+    await callback.message.answer(
+        "🎬 <b>جستجوی فیلم و سریال (فیلم‌تو‌مدیا):</b>\n\n"
+        "لطفاً نام فیلم یا سریال جدید را به فارسی یا انگلیسی ارسال کنید:\n"
+        "*(به عنوان مثال: <code>Inception</code> یا <code>بتمن</code> یا <code>Slow Horses</code> یا <code>Breaking Bad</code>)*\n\n"
+        "💡 <i>دکمه‌های منوی اصلی و انصراف همیشه در پایین صفحه در دسترس شما هستند.</i>",
+        reply_markup=MAIN_MENU_KEYBOARD,
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("f2m_back_to:"))
+async def handle_f2m_back_to(callback: CallbackQuery):
+    """Handle returning back to the movie details / seasons list."""
+    ref_id = callback.data.removeprefix("f2m_back_to:")
+    item = F2MLinkStore.get_link(ref_id)
+    movie_url = item.get("movie_url") if item else None
+
+    if not movie_url:
+        await callback.answer("⚠️ اطلاعات این اثر یافت نشد. لطفاً مجدداً جستجو کنید.", show_alert=True)
+        return
+
+    await callback.answer("⏳ در حال بازگشت به مشخصات اثر...")
+    status_msg = await callback.message.answer("⏳ در حال دریافت مجدد مشخصات اثر...")
+    await _show_movie_details(callback.message, movie_url, status_msg, search_item=item)
 
 
 # -------------------------------------------------------------

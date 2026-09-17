@@ -397,6 +397,7 @@ async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Op
         for item in movie_downloads:
             item["short_id"] = F2MLinkStore.save_link({
                 "title": title,
+                "movie_url": url,
                 "quality": item["quality"],
                 "encoder": item["encoder"],
                 "type": item["type"],
