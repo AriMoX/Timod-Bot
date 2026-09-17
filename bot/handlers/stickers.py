@@ -107,8 +107,10 @@ async def process_make_sticker(call: CallbackQuery):
                 "-t", "3", # Telegram video stickers MUST be max 3 seconds
                 "-vf", "scale='if(gt(iw,ih),512,-1)':'if(gt(iw,ih),-1,512)',fps=30",
                 "-c:v", "libvpx-vp9",
-                "-crf", "30",
-                "-b:v", "0",
+                "-crf", "40", # Increased compression to prevent STICKER_VIDEO_BIG
+                "-b:v", "400k", # Hard bitrate limit
+                "-maxrate", "500k",
+                "-bufsize", "1000k",
                 "-an", # No audio
                 str(out_path)
             ]
