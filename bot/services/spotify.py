@@ -496,48 +496,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
     actual_duration = meta_duration
     all_errors = []
 
-    # Step 1: Instant Deezer CDN Audio Backup (0.2s - 0.4s)
-    # Ensures a clean, high-quality audio file is ALWAYS ready on disk immediately!
-    fast_backup_path = DOWNLOADS_DIR / f"fast_sp_{track_id}.mp3"
-    if track_id.startswith("dz_") and (not fast_backup_path.exists() or fast_backup_path.stat().st_size < 30000):
-        dz_id = track_id[3:]
-        try:
-            dz_url = f"https://api.deezer.com/track/{dz_id}"
-            dz_req = urllib.request.Request(dz_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(dz_req, timeout=3) as dz_resp:
-                dz_data = json.loads(dz_resp.read().decode("utf-8"))
-                p_url = dz_data.get("preview")
-                if p_url:
-                    p_req = urllib.request.Request(p_url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(p_req, timeout=3) as p_resp:
-                        raw_preview_bytes = p_resp.read()
-                        if len(raw_preview_bytes) > 30000:
-                            temp_p = DOWNLOADS_DIR / f"raw_prev_{track_id}.mp3"
-                            temp_p.write_bytes(raw_preview_bytes)
-                            # Embed metadata and cover into fast backup
-                            if thumb_path and thumb_path.exists():
-                                f_cmd = [
-                                    ffmpeg_exe, "-y", "-i", str(temp_p), "-i", str(thumb_path),
-                                    "-c:a", "copy", "-map", "0:a:0", "-map", "1:v:0", "-c:v", "copy",
-                                    "-metadata:s:v", "title=Album cover",
-                                    "-metadata:s:v", "comment=Cover (front)",
-                                    *meta_args,
-                                    str(fast_backup_path)
-                                ]
-                            else:
-                                f_cmd = [
-                                    ffmpeg_exe, "-y", "-i", str(temp_p),
-                                    "-c:a", "copy",
-                                    *meta_args,
-                                    str(fast_backup_path)
-                                ]
-                            subprocess.run(f_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-                            safe_remove(temp_p)
-                            logger.info("Fast Deezer audio backup ready: %s (%s bytes)", fast_backup_path.name, fast_backup_path.stat().st_size)
-        except Exception as fe:
-            logger.warning("Fast Deezer backup failed for %s: %s", track_id, fe)
-
-    # Step 2: Multi-Candidate Non-DRM Full Audio Download (SoundCloud 1-2s)
+    # Step 1: Multi-Candidate Non-DRM Full Audio Download (SoundCloud primary 1-2s)
     queries = _generate_search_queries(artist, title)
     logger.info("Starting fast full audio search for '%s - %s': %s", artist, title, queries[:2])
 
@@ -546,7 +505,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 4,
+        "socket_timeout": 5,
     }
 
     cand_dl_opts = {
@@ -556,8 +515,8 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 5,
-        "retries": 0,
+        "socket_timeout": 8,
+        "retries": 1,
     }
 
     for q in queries[:2]:
@@ -576,11 +535,15 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                     c_dur = entry.get("duration") or 0
                     c_id = entry.get("id")
 
-                    # Skip DRM Go+ tracks (sub_high_tier) or tiny snippets (< 35s)
+                    # Skip DRM Go+ tracks (sub_high_tier) or tiny snippets (< 50s)
                     if entry.get("monetization_model") == "sub_high_tier":
                         logger.info("Skipping DRM Go+ track: %s", c_title)
                         continue
-                    if c_dur > 0 and c_dur < 35:
+                    if meta_duration > 40:
+                        if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 50):
+                            logger.info("Skipping candidate with duration mismatch: %ss (expected ~%ss)", c_dur, meta_duration)
+                            continue
+                    elif c_dur > 0 and c_dur < 50:
                         continue
 
                     try:
@@ -588,7 +551,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                         with yt_dlp.YoutubeDL(cand_dl_opts) as sc_dl:
                             c_info = sc_dl.extract_info(cand_url, download=True)
                         matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_{c_id}.*"))
-                        if matches and matches[0].exists() and matches[0].stat().st_size > 50000:
+                        if matches and matches[0].exists() and matches[0].stat().st_size > 500000:
                             raw_file_path = matches[0]
                             actual_duration = int(c_dur or (c_info.get("duration") if c_info else 0) or meta_duration or 0)
                             logger.info("Successfully fetched full track: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
@@ -602,7 +565,81 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         except Exception as sc_err:
             all_errors.append(f"SC query '{q}': {sc_err}")
 
-    # Step 3: Master Fast Encoding with HD Cover Art embedding (ID3v2.3)
+    # Fallback: YouTube Search for full track if SoundCloud yielded no match
+    if not raw_file_path or not raw_file_path.exists():
+        from bot.config import YOUTUBE_COOKIES_PATH
+        yt_search_opts = {
+            "extract_flat": True,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 6,
+            "cookiefile": str(YOUTUBE_COOKIES_PATH) if YOUTUBE_COOKIES_PATH.exists() else None,
+            "js_runtimes": {"node": {}},
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["visionos", "android", "web"]
+                }
+            },
+        }
+        yt_cand_opts = {
+            "format": "bestaudio/best",
+            "ffmpeg_location": ffmpeg_exe,
+            "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_yt_%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 8,
+            "retries": 1,
+            "cookiefile": str(YOUTUBE_COOKIES_PATH) if YOUTUBE_COOKIES_PATH.exists() else None,
+            "js_runtimes": {"node": {}},
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["visionos", "android", "web"]
+                }
+            },
+        }
+        for q in queries[:2]:
+            yt_query = f"ytsearch3:{q}"
+            logger.info("Searching YouTube fallback for full audio: %s", yt_query)
+            try:
+                with yt_dlp.YoutubeDL(yt_search_opts) as yt_ydl:
+                    yt_info = yt_ydl.extract_info(yt_query, download=False)
+                    candidates = yt_info.get("entries") or [yt_info]
+                    for entry in candidates:
+                        if not entry:
+                            continue
+                        cand_url = entry.get("webpage_url") or entry.get("url")
+                        c_title = entry.get("title") or ""
+                        c_dur = entry.get("duration") or 0
+                        c_id = entry.get("id")
+
+                        if meta_duration > 40:
+                            if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 55):
+                                continue
+                        elif c_dur > 0 and c_dur < 50:
+                            continue
+
+                        try:
+                            logger.info("Downloading YouTube candidate: %s (%ss) -> %s", c_title, c_dur, cand_url)
+                            with yt_dlp.YoutubeDL(yt_cand_opts) as yt_dl:
+                                c_info = yt_dl.extract_info(cand_url, download=True)
+                            matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_yt_{c_id}.*"))
+                            if matches and matches[0].exists() and matches[0].stat().st_size > 500000:
+                                raw_file_path = matches[0]
+                                actual_duration = int(c_dur or (c_info.get("duration") if c_info else 0) or meta_duration or 0)
+                                logger.info("Successfully fetched full track from YouTube: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                                break
+                        except Exception as cand_err:
+                            all_errors.append(f"YT Candidate {c_id}: {cand_err}")
+                            continue
+
+                if raw_file_path and raw_file_path.exists():
+                    break
+            except Exception as yt_err:
+                all_errors.append(f"YT query '{q}': {yt_err}")
+
+    # Step 2: Master High-Fidelity 320kbps Encoding with HD Cover Art embedding (ID3v2.3)
     final_audio_path = DOWNLOADS_DIR / f"spot_{track_id}.mp3"
     sp_ready_path = DOWNLOADS_DIR / f"sp_{track_id}.mp3"
 
@@ -616,7 +653,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
             ffmpeg_cmd.extend([
                 "-i", str(thumb_path),
                 "-c:a", "libmp3lame",
-                "-b:a", "256k",
+                "-b:a", "320k",
                 "-threads", "0",
                 "-map", "0:a:0",
                 "-map", "1:v:0",
@@ -629,7 +666,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         else:
             ffmpeg_cmd.extend([
                 "-c:a", "libmp3lame",
-                "-b:a", "256k",
+                "-b:a", "320k",
                 "-threads", "0",
                 "-map", "0:a:0",
                 *meta_args,
@@ -648,17 +685,10 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
             output_file = final_audio_path
             import shutil
             shutil.copy2(final_audio_path, sp_ready_path)
-            logger.info("Produced master MP3 with embedded cover: %s (%s bytes)", sp_ready_path.name, sp_ready_path.stat().st_size)
+            logger.info("Produced master 320kbps MP3 with embedded cover: %s (%s bytes)", sp_ready_path.name, sp_ready_path.stat().st_size)
         except Exception as conv_err:
             logger.warning("FFmpeg conversion error (%s), using raw audio", conv_err)
             output_file = raw_file_path
-    elif fast_backup_path and fast_backup_path.exists() and fast_backup_path.stat().st_size > 30000:
-        import shutil
-        shutil.copy2(fast_backup_path, final_audio_path)
-        shutil.copy2(fast_backup_path, sp_ready_path)
-        output_file = sp_ready_path
-        actual_duration = meta_duration or 30
-        logger.info("Promoted fast Deezer backup to ready audio: %s (%s bytes)", sp_ready_path.name, sp_ready_path.stat().st_size)
     else:
         err_msg = " | ".join(all_errors)
         raise ValueError(f"امکان یافتن یا دانلود فایل صوتی این قطعه وجود ندارد: '{artist} - {title}'. ({err_msg})")
@@ -1031,11 +1061,11 @@ async def search_spotify(query: str, limit: int = 10) -> list[SpotifyTrackMetada
 def get_or_prepare_spotify_mp3_sync(meta: SpotifyTrackMetadata) -> Path:
     """Ensure high-quality 320k MP3 file exists for the given track metadata."""
     final_path = DOWNLOADS_DIR / f"sp_{meta.track_id}.mp3"
-    if final_path.exists() and final_path.stat().st_size > 50000:
+    if final_path.exists() and final_path.stat().st_size > 500000:
         return final_path
 
     alt_path = DOWNLOADS_DIR / f"spot_{meta.track_id}.mp3"
-    if alt_path.exists() and alt_path.stat().st_size > 50000:
+    if alt_path.exists() and alt_path.stat().st_size > 500000:
         import shutil
         shutil.copy2(alt_path, final_path)
         return final_path
