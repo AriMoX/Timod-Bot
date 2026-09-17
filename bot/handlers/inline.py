@@ -153,7 +153,7 @@ async def handle_play_callback(callback: CallbackQuery):
         )
         return
 
-    status_msg = await callback.message.reply("⏳ در حال دانلود قطعه از اسپاتیفای با بالاترین کیفیت (320kbps)...")
+    status_msg = await callback.message.answer("⏳ در حال دانلود قطعه از اسپاتیفای با بالاترین کیفیت (320kbps)...")
     await callback.bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
 
     try:
@@ -166,7 +166,7 @@ async def handle_play_callback(callback: CallbackQuery):
         caption = f"🎵 <b>{html.escape(spot_track.title)}</b>\n👤 {html.escape(spot_track.artist)}\n\n🤖 دانلود شده توسط ربات"
 
         thumb_input = FSInputFile(spot_track.thumbnail_path) if spot_track.thumbnail_path and spot_track.thumbnail_path.exists() else None
-        sent_msg = await callback.message.reply_audio(
+        sent_msg = await callback.message.answer_audio(
             audio=FSInputFile(spot_track.file_path),
             thumbnail=thumb_input,
             title=spot_track.title,

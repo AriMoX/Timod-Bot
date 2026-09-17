@@ -237,7 +237,7 @@ async def handle_unspecified_text(message: Message, state: FSMContext):
         ]
     )
 
-    await message.reply(
+    await message.answer(
         f"❓ می‌خواهید عبارت «<b>{html.escape(text)}</b>» را در کدام بخش جستجو کنید؟",
         reply_markup=choice_markup,
         parse_mode="HTML",
@@ -248,6 +248,11 @@ async def handle_unspecified_text(message: Message, state: FSMContext):
 async def handle_choice_movie(callback: CallbackQuery):
     query_id = callback.data.removeprefix("choice_movie:")
     query = _PENDING_QUERIES.pop(query_id, None)
+    if not query and callback.message and callback.message.text:
+        m = re.search(r"«(.+?)»", callback.message.text)
+        if m:
+            query = m.group(1).strip()
+
     if not query:
         await callback.answer("⚠️ این درخواست منقضی شده است.", show_alert=True)
         return
@@ -263,6 +268,11 @@ async def handle_choice_movie(callback: CallbackQuery):
 async def handle_choice_music(callback: CallbackQuery):
     query_id = callback.data.removeprefix("choice_music:")
     query = _PENDING_QUERIES.pop(query_id, None)
+    if not query and callback.message and callback.message.text:
+        m = re.search(r"«(.+?)»", callback.message.text)
+        if m:
+            query = m.group(1).strip()
+
     if not query:
         await callback.answer("⚠️ این درخواست منقضی شده است.", show_alert=True)
         return
@@ -290,7 +300,7 @@ async def handle_choice_cancel(callback: CallbackQuery):
 # -------------------------------------------------------------
 async def _execute_f2m_search(message: Message, query: str):
     """Execute search on Film2Media and ALWAYS display full results list with interactive buttons."""
-    status_msg = await message.reply(
+    status_msg = await message.answer(
         f"🔎 در حال جستجوی «<b>{html.escape(query)}</b>» در فیلم‌تو‌مدیا...",
         reply_markup=MAIN_MENU_KEYBOARD,
         parse_mode="HTML",
@@ -305,7 +315,7 @@ async def _execute_f2m_search(message: Message, query: str):
             pass
 
         if not results:
-            await message.reply(
+            await message.answer(
                 f"❌ نتیجه‌ای برای «<b>{html.escape(query)}</b>» در سایت فیلم‌تو‌مدیا یافت نشد.\n\n"
                 "💡 <i>نکته: نام فیلم یا سریال را به فارسی یا انگلیسی با املای دقیق‌تر جستجو کنید.</i>",
                 parse_mode="HTML",
@@ -335,7 +345,7 @@ async def _execute_f2m_search(message: Message, query: str):
             text_lines.append(f"{idx}️⃣ <b>{html.escape(item['title'])}</b>{year_str}{rating_str}")
 
         markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-        await message.reply("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
+        await message.answer("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
 
     except Exception as e:
         logger.exception("Error executing movie search for %s: %s", query, e)
@@ -343,7 +353,7 @@ async def _execute_f2m_search(message: Message, query: str):
             await status_msg.delete()
         except Exception:
             pass
-        await message.reply(f"❌ خطا در جستجوی فیلم: {e}")
+        await message.answer(f"❌ خطا در جستجوی فیلم: {e}")
 
 
 @router.callback_query(F.data.startswith("f2m_sel:"))
@@ -368,7 +378,7 @@ async def handle_movie_selection(callback: CallbackQuery):
 
         if recovered_title:
             await callback.answer("⏳ در حال بازیابی و دریافت اطلاعات اثر...")
-            status_msg = await callback.message.reply(f"⏳ در حال استخراج کاور آرت و لینک‌های دانلود برای <b>{html.escape(recovered_title)}</b>...", parse_mode="HTML")
+            status_msg = await callback.message.answer(f"⏳ در حال استخراج کاور آرت و لینک‌های دانلود برای <b>{html.escape(recovered_title)}</b>...", parse_mode="HTML")
             try:
                 results = await search_f2m(recovered_title)
                 if results:
@@ -386,7 +396,7 @@ async def handle_movie_selection(callback: CallbackQuery):
         return
 
     await callback.answer("⏳ در حال آماده‌سازی کاور و کیفیت‌ها...")
-    status_msg = await callback.message.reply("⏳ در حال دریافت کاور آرت و استخراج لینک‌های دانلود مستقیم...")
+    status_msg = await callback.message.answer("⏳ در حال دریافت کاور آرت و استخراج لینک‌های دانلود مستقیم...")
 
     await _show_movie_details(callback.message, item["url"], status_msg, search_item=item)
 
@@ -405,7 +415,7 @@ async def _show_movie_details(
         if edit_msg:
             await edit_msg.edit_text(err_text)
         else:
-            await message.reply(err_text)
+            await message.answer(err_text)
         return
 
     title = details.get("title", "فیلم / سریال")
@@ -501,9 +511,9 @@ async def _show_movie_details(
         try:
             await edit_msg.edit_text(caption_text, reply_markup=markup, parse_mode="HTML")
         except Exception:
-            await message.reply(caption_text, reply_markup=markup, parse_mode="HTML")
+            await message.answer(caption_text, reply_markup=markup, parse_mode="HTML")
     else:
-        await message.reply(caption_text, reply_markup=markup, parse_mode="HTML")
+        await message.answer(caption_text, reply_markup=markup, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("f2m_dl:"))
@@ -547,7 +557,7 @@ async def handle_movie_download_click(callback: CallbackQuery):
         ]
     )
 
-    await callback.message.reply(
+    await callback.message.answer(
         text=msg_text,
         reply_markup=download_markup,
         parse_mode="HTML",
@@ -586,9 +596,9 @@ async def handle_movie_all_links(callback: CallbackQuery):
     if len(full_text) > 3900:
         chunks = [full_text[i:i+3800] for i in range(0, len(full_text), 3800)]
         for chunk in chunks:
-            await callback.message.reply(chunk, parse_mode="HTML", disable_web_page_preview=True)
+            await callback.message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
     else:
-        await callback.message.reply(full_text, parse_mode="HTML", disable_web_page_preview=True)
+        await callback.message.answer(full_text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @router.callback_query(F.data.startswith("f2m_season:"))
@@ -623,9 +633,9 @@ async def handle_series_season(callback: CallbackQuery):
     if len(full_text) > 3900:
         chunks = [full_text[i:i+3800] for i in range(0, len(full_text), 3800)]
         for chunk in chunks:
-            await callback.message.reply(chunk, parse_mode="HTML", disable_web_page_preview=True)
+            await callback.message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
     else:
-        await callback.message.reply(full_text, parse_mode="HTML", disable_web_page_preview=True)
+        await callback.message.answer(full_text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "noop")
@@ -638,7 +648,7 @@ async def handle_noop(callback: CallbackQuery):
 # -------------------------------------------------------------
 async def _execute_music_search(message: Message, query: str):
     """Search music catalog and deliver the audio with download buttons."""
-    status_msg = await message.reply(
+    status_msg = await message.answer(
         f"🎵 در حال جستجوی قطعه «<b>{html.escape(query)}</b>»...",
         reply_markup=MAIN_MENU_KEYBOARD,
         parse_mode="HTML",
@@ -652,7 +662,7 @@ async def _execute_music_search(message: Message, query: str):
                 await status_msg.delete()
             except Exception:
                 pass
-            await message.reply(
+            await message.answer(
                 f"❌ موزیکی برای عبارت «<b>{html.escape(query)}</b>» یافت نشد.\n\n"
                 "💡 <i>نکته: نام قطعه یا خواننده را بررسی و مجدداً امتحان کنید.</i>",
                 parse_mode="HTML",
@@ -692,7 +702,7 @@ async def _execute_music_search(message: Message, query: str):
             except Exception:
                 pass
 
-            await message.reply_audio(
+            await message.answer_audio(
                 audio=FSInputFile(audio_path),
                 title=top_track.title,
                 performer=top_track.artist,
@@ -706,7 +716,7 @@ async def _execute_music_search(message: Message, query: str):
                 await status_msg.delete()
             except Exception:
                 pass
-            await message.reply("❌ متأسفانه در دانلود فایل صوتی این قطعه خطایی رخ داد. لطفاً قطعه دیگری را انتخاب کنید.")
+            await message.answer("❌ متأسفانه در دانلود فایل صوتی این قطعه خطایی رخ داد. لطفاً قطعه دیگری را انتخاب کنید.")
 
     except Exception as e:
         logger.exception("Error in _execute_music_search for %s: %s", query, e)
@@ -714,7 +724,7 @@ async def _execute_music_search(message: Message, query: str):
             await status_msg.delete()
         except Exception:
             pass
-        await message.reply(f"❌ خطا در جستجوی موزیک: {e}")
+        await message.answer(f"❌ خطا در جستجوی موزیک: {e}")
 
 
 @router.callback_query(F.data.startswith("music_dl:"))
@@ -728,13 +738,13 @@ async def handle_music_callback_download(callback: CallbackQuery):
         return
 
     await callback.answer("⏳ در حال آماده‌سازی و ارسال فایل صوتی...")
-    status_msg = await callback.message.reply(f"⏳ در حال دانلود و آماده‌سازی <b>{html.escape(meta.title)}</b> (320kbps)...", parse_mode="HTML")
+    status_msg = await callback.message.answer(f"⏳ در حال دانلود و آماده‌سازی <b>{html.escape(meta.title)}</b> (320kbps)...", parse_mode="HTML")
 
     try:
         audio_path = await get_or_prepare_spotify_mp3(meta)
         if audio_path and audio_path.exists() and audio_path.stat().st_size > 100000:
             caption = f"🎵 <b>{html.escape(meta.title)}</b>\n👤 <b>هنرمند:</b> {html.escape(meta.artist)}\n\n🤖 دانلود شده از ربات @Timod27_Bot"
-            await callback.message.reply_audio(
+            await callback.message.answer_audio(
                 audio=FSInputFile(audio_path),
                 title=meta.title,
                 performer=meta.artist,
