@@ -15,6 +15,7 @@ from bot.handlers.common import router as common_router
 from bot.handlers.downloader import router as downloader_router
 from bot.handlers.video_note import router as video_note_router
 from bot.handlers.inline import router as inline_router
+from bot.handlers.movies import router as movies_router
 from bot.middlewares.subscription import ChannelSubscriptionMiddleware
 from bot.services.user_storage import init_user_db
 
@@ -471,6 +472,29 @@ async def start_healthcheck_server():
     app.router.add_get("/test-spotify-album", handle_test_spotify_album)
     app.router.add_get("/test-spot-search", handle_test_spot_search)
     app.router.add_get("/test-inline-audio", handle_test_inline_audio)
+    async def handle_test_f2m(request):
+        q = request.query.get("q", "Inception")
+        from bot.services.film2media import search_f2m, get_movie_details
+        try:
+            results = await search_f2m(q)
+            details = None
+            if results:
+                details = await get_movie_details(results[0]["url"])
+            return web.json_response({
+                "ok": True,
+                "query": q,
+                "results_count": len(results),
+                "first_result": results[0] if results else None,
+                "first_details": {
+                    "title": details.get("title") if details else None,
+                    "downloads_count": len(details.get("downloads", [])) if details else 0,
+                    "downloads": details.get("downloads", [])[:5] if details else [],
+                } if details else None,
+            })
+        except Exception as e:
+            import traceback
+            return web.json_response({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
     app.router.add_get("/debug-yt", handle_debug_yt)
     app.router.add_get("/debug-audio-logs", handle_debug_audio_logs)
     app.router.add_get("/debug-db", handle_debug_db)
@@ -480,6 +504,7 @@ async def start_healthcheck_server():
     app.router.add_get("/api/backup", handle_api_backup)
     app.router.add_get("/api/backup-now", handle_api_backup_now)
     app.router.add_post("/api/restore", handle_api_restore)
+    app.router.add_get("/test-f2m", handle_test_f2m)
     app.router.add_route("*", "/audio/{filename}", handle_serve_audio)
 
     runner = web.AppRunner(app)
@@ -568,6 +593,7 @@ async def main():
     dp.include_router(video_note_router)
     dp.include_router(downloader_router)
     dp.include_router(inline_router)
+    dp.include_router(movies_router)
 
     # Test bot connection
     me = await bot.get_me()
