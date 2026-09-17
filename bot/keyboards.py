@@ -12,6 +12,7 @@ MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
             KeyboardButton(text="🎵 جستجوی موزیک"),
         ],
         [
+            KeyboardButton(text="❌ انصراف / بازگشت به منوی اصلی"),
             KeyboardButton(text="📖 راهنمای استفاده"),
         ],
     ],
@@ -19,12 +20,4 @@ MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
     is_persistent=True,
 )
 
-CANCEL_KEYBOARD = ReplyKeyboardMarkup(
-    keyboard=[
-        [
-            KeyboardButton(text="❌ انصراف / بازگشت به منوی اصلی"),
-        ]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=True,
-)
+CANCEL_KEYBOARD = MAIN_MENU_KEYBOARD

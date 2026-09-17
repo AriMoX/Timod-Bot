@@ -92,86 +92,126 @@ async def fetch_link_size(session: aiohttp.ClientSession, url: str) -> Optional[
     return None
 
 
+def _rank_results(results: list[dict], query: str) -> list[dict]:
+    """Smartly rank search results so exact and best title matches appear at the top."""
+    q_clean = query.lower().strip()
+    q_words = set(re.findall(r'[\w\u0600-\u06FF]+', q_clean))
+
+    def score(item: dict) -> int:
+        title = item.get("title", "").lower().strip()
+        t_words = set(re.findall(r'[\w\u0600-\u06FF]+', title))
+        pts = 0
+
+        # Exact match or title without trailing year
+        clean_t = re.sub(r'\s*\(\d{4}\)$', '', title).strip()
+        clean_t = re.sub(r'\s+\d{4}$', '', clean_t).strip()
+        if clean_t == q_clean or title == q_clean:
+            pts += 200
+        elif clean_t.startswith(q_clean) or title.startswith(q_clean):
+            pts += 100
+        elif q_clean in title:
+            pts += 50
+
+        # Overlapping words
+        overlap = len(q_words.intersection(t_words))
+        pts += overlap * 15
+
+        # Series vs Movie intent preference
+        if any(w in q_clean for w in ['سریال', 'series', 'فصل']) and item.get("is_series"):
+            pts += 40
+        if any(w in q_clean for w in ['فیلم', 'movie']) and not item.get("is_series"):
+            pts += 40
+
+        return pts
+
+    return sorted(results, key=score, reverse=True)
+
+
 async def search_f2m(query: str) -> list[dict]:
-    """Search movies and series on Film2Media."""
+    """Search movies and series on Film2Media with &type=both and smart ranking."""
     query = query.strip()
     if not query:
         return []
 
-    search_url = f"{BASE_URL}/?s={urllib.parse.quote(query)}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Referer": f"{BASE_URL}/",
     }
 
-    results = []
-    try:
-        conn = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=conn, headers=headers) as session:
-            async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
-                if resp.status != 200:
-                    logger.warning("F2M search returned HTTP %s for %s", resp.status, query)
-                    return []
-                html = await resp.text(errors="ignore")
+    async def _fetch_articles(search_term: str) -> list[dict]:
+        search_url = f"{BASE_URL}/?s={urllib.parse.quote(search_term)}&type=both"
+        items = []
+        try:
+            conn = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=conn, headers=headers) as session:
+                async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+                    if resp.status != 200:
+                        logger.warning("F2M search returned HTTP %s for %s", resp.status, search_term)
+                        return []
+                    html = await resp.text(errors="ignore")
 
-        articles = re.findall(r'<article[^>]*>(.*?)</article>', html, re.DOTALL | re.IGNORECASE)
-        seen_urls = set()
+            articles = re.findall(r'<article[^>]*>(.*?)</article>', html, re.DOTALL | re.IGNORECASE)
+            seen_urls = set()
 
-        for art in articles:
-            # Match main link
-            link_m = re.search(r'<a[^>]+href=["\'](https://www\.f2mc\.top/[^"\']+)["\'][^>]*class=["\'][^"\']*stretched-link[^"\']*["\']', art, re.I)
-            if not link_m:
-                link_m = re.search(r'class=["\'][^"\']*stretched-link[^"\']*["\'][^>]*href=["\'](https://www\.f2mc\.top/[^"\']+)["\']', art, re.I)
-            if not link_m:
-                # Fallback to any content link
-                valid_links = re.findall(r'<a\s+[^>]*href=["\'](https://www\.f2mc\.top/[^"\']+)["\'][^>]*>(.*?)</a>', art, re.DOTALL)
-                for h, t in valid_links:
-                    if not any(x in h for x in ["genres", "category", "tag", "wp-content", "#", "page/"]):
-                        link_m = type("Obj", (), {"group": lambda self, n: h})()
-                        break
+            for art in articles:
+                link_m = re.search(r'<a[^>]+href=["\'](https://www\.f2mc\.top/[^"\']+)["\'][^>]*class=["\'][^"\']*stretched-link[^"\']*["\']', art, re.I)
+                if not link_m:
+                    link_m = re.search(r'class=["\'][^"\']*stretched-link[^"\']*["\'][^>]*href=["\'](https://www\.f2mc\.top/[^"\']+)["\']', art, re.I)
+                if not link_m:
+                    valid_links = re.findall(r'<a\s+[^>]*href=["\'](https://www\.f2mc\.top/[^"\']+)["\'][^>]*>(.*?)</a>', art, re.DOTALL)
+                    for h, t in valid_links:
+                        if not any(x in h for x in ["genres", "category", "tag", "wp-content", "#", "page/"]):
+                            link_m = type("Obj", (), {"group": lambda self, n: h})()
+                            break
 
-            if not link_m:
-                continue
+                if not link_m:
+                    continue
 
-            page_url = link_m.group(1)
-            if page_url in seen_urls:
-                continue
-            seen_urls.add(page_url)
+                page_url = link_m.group(1)
+                if page_url in seen_urls:
+                    continue
+                seen_urls.add(page_url)
 
-            # Title: prefer h2.entry-title
-            h2_m = re.search(r'<h2[^>]*class=["\'][^"\']*entry-title[^"\']*["\'][^>]*>(.*?)</h2>', art, re.DOTALL | re.I)
-            if not h2_m:
-                h2_m = re.search(r'<h2[^>]*>(.*?)</h2>', art, re.DOTALL | re.I)
-            clean_title = " ".join(re.sub(r"<[^>]+>", " ", h2_m.group(1)).split()).strip() if h2_m else ""
+                h2_m = re.search(r'<h2[^>]*class=["\'][^"\']*entry-title[^"\']*["\'][^>]*>(.*?)</h2>', art, re.DOTALL | re.I)
+                if not h2_m:
+                    h2_m = re.search(r'<h2[^>]*>(.*?)</h2>', art, re.DOTALL | re.I)
+                clean_title = " ".join(re.sub(r"<[^>]+>", " ", h2_m.group(1)).split()).strip() if h2_m else ""
 
-            # Poster
-            img_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', art)
-            poster = img_m.group(1) if img_m else None
+                img_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', art)
+                poster = img_m.group(1) if img_m else None
 
-            # Meta: Year and Rating
-            year_m = re.search(r'#icon-calendar.*?(\b(?:19\d\d|20\d\d)\b)', art, re.DOTALL)
-            if not year_m:
-                year_m = re.search(r"\b(19\d\d|20\d\d)\b", art)
-            year = year_m.group(1) if year_m else ""
+                year_m = re.search(r'#icon-calendar.*?(\b(?:19\d\d|20\d\d)\b)', art, re.DOTALL)
+                if not year_m:
+                    year_m = re.search(r"\b(19\d\d|20\d\d)\b", art)
+                year = year_m.group(1) if year_m else ""
 
-            imdb_m = re.search(r'#icon-imdb.*?<strong[^>]*>([\d\.]+)</strong>', art, re.DOTALL)
-            if not imdb_m:
-                imdb_m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*10", art)
-            rating = imdb_m.group(1) if imdb_m else ""
+                imdb_m = re.search(r'#icon-imdb.*?<strong[^>]*>([\d\.]+)</strong>', art, re.DOTALL)
+                if not imdb_m:
+                    imdb_m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*10", art)
+                rating = imdb_m.group(1) if imdb_m else ""
 
-            is_series = "/series/" in page_url or "سریال" in art or "سریال" in clean_title
+                is_series = "/series/" in page_url or "سریال" in art or "سریال" in clean_title
 
-            results.append({
-                "title": clean_title or "فیلم / سریال",
-                "url": page_url,
-                "poster": poster,
-                "year": year,
-                "rating": rating,
-                "is_series": is_series,
-            })
+                items.append({
+                    "title": clean_title or "فیلم / سریال",
+                    "url": page_url,
+                    "poster": poster,
+                    "year": year,
+                    "rating": rating,
+                    "is_series": is_series,
+                })
+        except Exception as e:
+            logger.exception("Error searching Film2Media for %s: %s", search_term, e)
+        return items
 
-    except Exception as e:
-        logger.exception("Error searching Film2Media for %s: %s", query, e)
+    results = await _fetch_articles(query)
+
+    clean_q = re.sub(r"^(?:فیلم|سریال|فصل)\s+", "", query, flags=re.I).strip()
+    if not results and clean_q and clean_q != query:
+        results = await _fetch_articles(clean_q)
+
+    if results:
+        results = _rank_results(results, query)
 
     return results
 

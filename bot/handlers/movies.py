@@ -101,9 +101,9 @@ async def start_movie_search(message: Message, state: FSMContext):
         "🎬 <b>جستجوی فیلم و سریال (فیلم‌تو‌مدیا):</b>\n\n"
         "لطفاً نام فیلم یا سریال مورد نظر خود را به فارسی یا انگلیسی ارسال کنید:\n"
         "*(به عنوان مثال: <code>Inception</code> یا <code>بتمن</code> یا <code>Slow Horses</code> یا <code>زخم کاری</code>)*\n\n"
-        "برای لغو می‌توانید از دکمه «انصراف» زیر استفاده کنید."
+        "💡 <i>دکمه‌های منوی اصلی و انصراف همیشه در پایین صفحه در دسترس شما هستند.</i>"
     )
-    await message.reply(prompt, reply_markup=CANCEL_KEYBOARD, parse_mode="HTML")
+    await message.answer(prompt, reply_markup=MAIN_MENU_KEYBOARD, parse_mode="HTML")
 
 
 @router.message(F.text.func(lambda t: bool(t and t.strip() in MUSIC_BUTTON_TEXTS)))
@@ -136,7 +136,7 @@ async def start_music_search(message: Message, state: FSMContext):
             ]
         ]
     )
-    await message.reply(prompt, reply_markup=CANCEL_KEYBOARD, parse_mode="HTML")
+    await message.answer(prompt, reply_markup=MAIN_MENU_KEYBOARD, parse_mode="HTML")
     await message.answer("یا روی دکمه زیر بزنید تا پنجره اینلاین باز شود:", reply_markup=inline_btn)
 
 
@@ -165,9 +165,9 @@ async def handle_movie_query_input(message: Message, state: FSMContext):
         return
 
     if text in MOVIE_BUTTON_TEXTS:
-        await message.reply(
+        await message.answer(
             "🎬 لطفاً نام فیلم یا سریال مورد نظر خود را ارسال کنید:\n*(مثلاً: Inception یا بتمن)*",
-            reply_markup=CANCEL_KEYBOARD,
+            reply_markup=MAIN_MENU_KEYBOARD,
             parse_mode="HTML",
         )
         return
@@ -190,9 +190,9 @@ async def handle_music_query_input(message: Message, state: FSMContext):
         return
 
     if text in MUSIC_BUTTON_TEXTS:
-        await message.reply(
+        await message.answer(
             "🎵 لطفاً نام آهنگ یا خواننده مورد نظر خود را ارسال کنید:\n*(مثلاً: Without Me یا شادمهر)*",
-            reply_markup=CANCEL_KEYBOARD,
+            reply_markup=MAIN_MENU_KEYBOARD,
             parse_mode="HTML",
         )
         return
