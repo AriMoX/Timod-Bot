@@ -194,10 +194,9 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult):
             safe_remove(spot_track.file_path, spot_track.thumbnail_path)
 
             # Replace the dummy audio message in the chat!
-            caption = f"🎵 <b>{html.escape(spot_track.title)}</b>\n👤 {html.escape(spot_track.artist)}\n\n🤖 دانلود شده توسط ربات @Timod27_Bot"
             await chosen.bot.edit_message_media(
                 inline_message_id=inline_message_id,
-                media=InputMediaAudio(media=file_id, caption=caption, parse_mode="HTML")
+                media=InputMediaAudio(media=file_id, caption=None, parse_mode="HTML")
             )
         except Exception as e:
             logger.exception("Error replacing chosen inline result: %s", e)
@@ -255,13 +254,14 @@ async def handle_play_callback(callback: CallbackQuery):
     await callback.bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
 
     try:
-        from bot.services.spotify import get_spotify_track_metadata
-        meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
-        if not meta or not meta.title:
-            meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
+        from bot.services.spotify import get_spotify_track_metadata, get_cached_track_meta, SpotifyTrackMetadata
+        meta = get_cached_track_meta(track_id)
+        if not meta or not meta.title or meta.title == "Spotify Track":
+            meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
+        if not meta or not meta.title or meta.title == "Spotify Track":
+            raise ValueError("Could not retrieve track metadata from Spotify.")
 
         spot_track = await download_spotify_track_meta(meta)
-        caption = f"🎵 <b>{html.escape(spot_track.title)}</b>\n👤 {html.escape(spot_track.artist)}\n\n🤖 دانلود شده توسط ربات"
 
         thumb_input = FSInputFile(spot_track.thumbnail_path) if spot_track.thumbnail_path and spot_track.thumbnail_path.exists() else None
         sent_msg = await callback.message.answer_audio(
@@ -270,7 +270,7 @@ async def handle_play_callback(callback: CallbackQuery):
             title=spot_track.title,
             performer=spot_track.artist,
             duration=spot_track.duration,
-            caption=caption,
+            caption=None,
             parse_mode="HTML",
         )
         await status_msg.delete()

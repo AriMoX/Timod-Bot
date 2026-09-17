@@ -1004,13 +1004,12 @@ async def handle_music_callback_download(callback: CallbackQuery):
     try:
         audio_path = await get_or_prepare_spotify_mp3(meta)
         if audio_path and audio_path.exists() and audio_path.stat().st_size > 100000:
-            caption = f"🎵 <b>{html.escape(meta.title)}</b>\n👤 <b>هنرمند:</b> {html.escape(meta.artist)}\n\n🤖 دانلود شده از ربات @Timod27_Bot"
             await callback.message.answer_audio(
                 audio=FSInputFile(audio_path),
                 title=meta.title,
                 performer=meta.artist,
                 duration=meta.duration,
-                caption=caption,
+                caption=None,
                 parse_mode="HTML",
             )
             await status_msg.delete()
