@@ -91,7 +91,7 @@ async def process_emoji(message: Message, state: FSMContext):
     await state.clear()
     
     # Check if text is just an emoji
-    emoji = message.text if message.text else None
+    emoji = "".join(message.text.split()) if message.text else None
     await do_make_sticker(message, message.bot, data, emoji)
 
 async def do_make_sticker(message: Message, bot, data: dict, emoji: str):
