@@ -95,7 +95,8 @@ async def handle_inline_query(inline_query: InlineQuery):
 
     # 4. Construct direct Audio Results using a fast dummy URL to bypass Telegram timeouts
     results = []
-    dummy_audio_url = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+    server_base = SERVER_PUBLIC_URL.rstrip("/")
+    dummy_audio_url = f"{server_base}/audio/sp_pending.mp3"
     
     for track in tracks:
         cache_key = f"sp_{track.track_id}"
@@ -119,7 +120,6 @@ async def handle_inline_query(inline_query: InlineQuery):
                     title=f"⏳ در حال آماده‌سازی: {track.title}",
                     performer=track.artist,
                     audio_duration=track.duration if track.duration > 0 else None,
-                    thumbnail_url=track.cover_url,
                     caption="⏳ <i>لطفاً چند لحظه صبر کنید تا فایل اصلی از سرور دریافت و جایگزین شود...</i>",
                     parse_mode="HTML"
                 )
