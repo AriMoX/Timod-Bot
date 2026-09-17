@@ -72,6 +72,97 @@ def save_or_update_user(
         logger.exception("Error saving user %s to database: %s", user_id, e)
 
 
+def to_shamsi_tehran(ts_str: str | None, assume_utc: bool = True) -> str:
+    """Convert a timestamp string to Shamsi (Solar Hijri) date and Tehran time (UTC+03:30)."""
+    if not ts_str or ts_str == "نامشخص":
+        return "نامشخص"
+    try:
+        from datetime import timezone, timedelta
+        dt = datetime.strptime(str(ts_str).strip(), "%Y-%m-%d %H:%M:%S")
+        if assume_utc:
+            tehran_tz = timezone(timedelta(hours=3, minutes=30))
+            dt = dt.replace(tzinfo=timezone.utc).astimezone(tehran_tz)
+
+        gy, gm, gd = dt.year, dt.month, dt.day
+        g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+        gy2 = gy + 1 if gm > 2 else gy
+        days = 355666 + (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) + gd + g_d_m[gm - 1]
+        jy = -1595 + (33 * (days // 12053))
+        days %= 12053
+        jy += 4 * (days // 1461)
+        days %= 1461
+        if days > 365:
+            jy += (days - 1) // 365
+            days = (days - 1) % 365
+        if days < 186:
+            jm = 1 + (days // 31)
+            jd = 1 + (days % 31)
+        else:
+            jm = 7 + ((days - 186) // 30)
+            jd = 1 + ((days - 186) % 30)
+
+        persian_months = [
+            "", "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+            "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
+        ]
+        month_name = persian_months[jm] if 1 <= jm <= 12 else str(jm)
+        time_str = dt.strftime("%H:%M:%S")
+        return f"{jd} {month_name} {jy} - ساعت {time_str} (تهران)"
+    except Exception:
+        return str(ts_str)
+
+
+def format_users_report_chunks(users: list[dict], admin_id: int) -> list[str]:
+    """Format all users into chunked Telegram messages with Shamsi date & Tehran time."""
+    from datetime import datetime, timezone, timedelta
+    tehran_now = datetime.now(timezone(timedelta(hours=3, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
+    now_shamsi = to_shamsi_tehran(tehran_now, assume_utc=False)
+
+    total = len(users)
+    header = (
+        f"📊 <b>گزارش کامل کاربران ربات (@Timod27_Bot)</b>\n\n"
+        f"👥 <b>تعداد کل کاربران از روز اول:</b> {total} نفر\n"
+        f"🕒 <b>زمان تهیه گزارش:</b> {now_shamsi}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    if not users:
+        return [header + "❌ هیچ کاربری در دیتابیس ثبت نشده است."]
+
+    chunks = []
+    current_chunk = header
+
+    for idx, u in enumerate(users, start=1):
+        username_str = f"@{u['username']}" if u.get("username") else "ندارد"
+        first = u.get("first_name") or ""
+        last = u.get("last_name") or ""
+        name_str = f"{first} {last}".strip() or "بدون نام"
+        is_owner = " 👑 <b>(مالک ربات)</b>" if u.get("user_id") == admin_id else ""
+
+        first_seen_shamsi = to_shamsi_tehran(u.get("first_seen"))
+        last_seen_shamsi = to_shamsi_tehran(u.get("last_seen"))
+
+        user_block = (
+            f"👤 <b>{idx}. {name_str}</b>{is_owner}\n"
+            f"   ├ 🆔 <b>آیدی عددی:</b> <code>{u.get('user_id')}</code>\n"
+            f"   ├ 🌐 <b>یوزرنیم:</b> {username_str}\n"
+            f"   ├ 📅 <b>تاریخ اولین استارت:</b> {first_seen_shamsi}\n"
+            f"   └ ⏱ <b>آخرین فعالیت:</b> {last_seen_shamsi}\n"
+            f"────────────────────\n"
+        )
+
+        if len(current_chunk) + len(user_block) > 3800:
+            chunks.append(current_chunk)
+            current_chunk = f"📊 <b>ادامه لیست کاربران (بخش {len(chunks) + 1}):</b>\n\n" + user_block
+        else:
+            current_chunk += user_block
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+
 def get_all_users() -> list[dict]:
     """Retrieve all users ordered by last seen descending."""
     try:

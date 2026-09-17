@@ -341,6 +341,102 @@ async def start_healthcheck_server():
             "recent_requests": list(reversed(_audio_request_logs[-50:])),
         })
 
+    async def handle_debug_db(request):
+        import sqlite3
+        from bot.services.cache import DB_PATH
+        tracks = []
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT track_id, title, artist, duration, file_id FROM cached_tracks ORDER BY rowid DESC LIMIT 25")
+                tracks = [{"track_id": r[0], "title": r[1], "artist": r[2], "duration": r[3], "file_id": r[4]} for r in cur.fetchall()]
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)})
+        return web.json_response({"ok": True, "count": len(tracks), "cached_tracks": tracks})
+
+    async def handle_clear_cache(request):
+        import sqlite3
+        from bot.services.cache import DB_PATH
+        from bot.config import DOWNLOADS_DIR
+        cleared_files = 0
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM cached_tracks")
+                conn.commit()
+            for pattern in ["sp_*.mp3", "spot_*.mp3", "fast_*.mp3", "raw_*.mp3", "raw_*.m4a"]:
+                for f in DOWNLOADS_DIR.glob(pattern):
+                    try:
+                        f.unlink()
+                        cleared_files += 1
+                    except Exception:
+                        pass
+            return web.json_response({"ok": True, "msg": f"Cache cleared, {cleared_files} disk files removed"})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def handle_api_users_list(request):
+        from bot.services.user_storage import get_all_users, to_shamsi_tehran
+        users = get_all_users()
+        res = []
+        for u in users:
+            res.append({
+                "user_id": u.get("user_id"),
+                "username": u.get("username"),
+                "name": f"{u.get('first_name') or ''} {u.get('last_name') or ''}".strip(),
+                "first_seen_raw": u.get("first_seen"),
+                "first_seen_shamsi": to_shamsi_tehran(u.get("first_seen")),
+                "last_seen_raw": u.get("last_seen"),
+                "last_seen_shamsi": to_shamsi_tehran(u.get("last_seen")),
+            })
+        return web.json_response({"ok": True, "total_users": len(res), "users": res})
+
+    async def handle_send_users_report(request):
+        from bot.services.user_storage import get_all_users, format_users_report_chunks, to_shamsi_tehran
+        from bot.config import ADMIN_ID
+        users = get_all_users()
+        if not _global_bot:
+            return web.json_response({"ok": False, "error": "Bot instance not initialized yet"})
+
+        chunks = format_users_report_chunks(users, ADMIN_ID)
+        sent_messages = 0
+        for chunk in chunks:
+            try:
+                await _global_bot.send_message(chat_id=ADMIN_ID, text=chunk, parse_mode="HTML")
+                sent_messages += 1
+                await asyncio.sleep(0.5)
+            except Exception as se:
+                logger.warning("Failed sending chunk to admin: %s", se)
+
+        if users:
+            from aiogram.types import BufferedInputFile
+            txt_lines = [
+                f"گزارش کامل کاربران ربات @Timod27_Bot",
+                f"تعداد کل کاربران: {len(users)} نفر",
+                "=" * 50,
+            ]
+            for idx, u in enumerate(users, start=1):
+                name = f"{u.get('first_name') or ''} {u.get('last_name') or ''}".strip() or "بدون نام"
+                uname = f"@{u.get('username')}" if u.get('username') else "ندارد"
+                fs = to_shamsi_tehran(u.get('first_seen'))
+                ls = to_shamsi_tehran(u.get('last_seen'))
+                txt_lines.append(f"{idx}. {name} | آیدی: {u.get('user_id')} | یوزرنیم: {uname}")
+                txt_lines.append(f"   اولین استارت: {fs}")
+                txt_lines.append(f"   آخرین فعالیت: {ls}")
+                txt_lines.append("-" * 40)
+            try:
+                file_bytes = "\n".join(txt_lines).encode("utf-8")
+                doc = BufferedInputFile(file_bytes, filename="users_list_shamsi.txt")
+                await _global_bot.send_document(chat_id=ADMIN_ID, document=doc, caption="📁 فایل متنی کامل مشخصات کاربران ربات (تاریخ شمسی و ساعت تهران)")
+            except Exception as de:
+                logger.warning("Failed sending txt file to admin: %s", de)
+
+        return web.json_response({
+            "ok": True,
+            "total_users": len(users),
+            "sent_chunks": sent_messages,
+        })
+
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
     app.router.add_get("/version", handle_version)
@@ -351,6 +447,10 @@ async def start_healthcheck_server():
     app.router.add_get("/test-inline-audio", handle_test_inline_audio)
     app.router.add_get("/debug-yt", handle_debug_yt)
     app.router.add_get("/debug-audio-logs", handle_debug_audio_logs)
+    app.router.add_get("/debug-db", handle_debug_db)
+    app.router.add_get("/clear-cache", handle_clear_cache)
+    app.router.add_get("/api/users-list", handle_api_users_list)
+    app.router.add_get("/api/send-users-report", handle_send_users_report)
     app.router.add_route("*", "/audio/{filename}", handle_serve_audio)
 
     runner = web.AppRunner(app)
@@ -365,7 +465,46 @@ async def start_healthcheck_server():
         logger.warning("Healthcheck server not started: %s", e)
 
 
+_global_bot: Bot | None = None
+
+
+async def _send_admin_startup_report(bot: Bot):
+    """Send users report with Shamsi date and Tehran time to admin upon startup."""
+    await asyncio.sleep(3)
+    try:
+        from bot.services.user_storage import get_all_users, format_users_report_chunks, to_shamsi_tehran
+        users = get_all_users()
+        chunks = format_users_report_chunks(users, ADMIN_ID)
+        for chunk in chunks:
+            await bot.send_message(chat_id=ADMIN_ID, text=chunk, parse_mode="HTML")
+            await asyncio.sleep(0.5)
+
+        if users:
+            from aiogram.types import BufferedInputFile
+            txt_lines = [
+                f"گزارش کامل کاربران ربات @Timod27_Bot",
+                f"تعداد کل کاربران: {len(users)} نفر",
+                "=" * 50,
+            ]
+            for idx, u in enumerate(users, start=1):
+                name = f"{u.get('first_name') or ''} {u.get('last_name') or ''}".strip() or "بدون نام"
+                uname = f"@{u.get('username')}" if u.get('username') else "ندارد"
+                fs = to_shamsi_tehran(u.get('first_seen'))
+                ls = to_shamsi_tehran(u.get('last_seen'))
+                txt_lines.append(f"{idx}. {name} | آیدی: {u.get('user_id')} | یوزرنیم: {uname}")
+                txt_lines.append(f"   اولین استارت: {fs}")
+                txt_lines.append(f"   آخرین فعالیت: {ls}")
+                txt_lines.append("-" * 40)
+            file_bytes = "\n".join(txt_lines).encode("utf-8")
+            doc = BufferedInputFile(file_bytes, filename="users_list_shamsi.txt")
+            await bot.send_document(chat_id=ADMIN_ID, document=doc, caption="📁 فایل متنی کامل مشخصات کاربران ربات (تاریخ شمسی و ساعت تهران)")
+        logger.info("Admin startup user report sent successfully to %s", ADMIN_ID)
+    except Exception as e:
+        logger.warning("Failed to send admin startup user report: %s", e)
+
+
 async def main():
+    global _global_bot
     print("=" * 50, flush=True)
     print("Initializing Telegram Downloader Bot...", flush=True)
 
@@ -386,6 +525,7 @@ async def main():
         session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    _global_bot = bot
 
     dp = Dispatcher()
 
@@ -410,6 +550,9 @@ async def main():
 
     print("🚀 Bot is now listening for messages... (Press Ctrl+C to stop)", flush=True)
     print("=" * 50, flush=True)
+
+    # Automatically send the full user list with Shamsi date & Tehran time to admin
+    asyncio.create_task(_send_admin_startup_report(bot))
 
     try:
         await dp.start_polling(

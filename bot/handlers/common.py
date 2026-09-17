@@ -198,36 +198,39 @@ async def handle_verify_subscription(callback: CallbackQuery):
 @router.message(Command("stats"))
 @router.message(Command("admin"))
 async def cmd_users_list(message: Message):
-    """Show list of all users who started and used the bot (Admin only)."""
+    """Show list of all users who started and used the bot with Shamsi date & Tehran time (Admin only)."""
     if message.from_user.id != ADMIN_ID:
         await message.reply("⛔️ این دستور فقط مخصوص مالک ربات است.")
         return
 
+    from bot.services.user_storage import get_all_users, format_users_report_chunks, to_shamsi_tehran
     users = get_all_users()
-    total = len(users)
+    chunks = format_users_report_chunks(users, ADMIN_ID)
 
-    lines = [
-        "👑 <b>پنل آمار و لیست کاربران ربات (@Timod27_Bot)</b>\n",
-        f"👥 <b>تعداد کل کاربران:</b> {total} نفر\n",
-        "━━━━━━━━━━━━━━━━━━━━",
-    ]
+    for chunk in chunks:
+        await message.reply(chunk, parse_mode="HTML")
 
-    for idx, u in enumerate(users, start=1):
-        username_str = f"@{u['username']}" if u["username"] else "بدون یوزرنیم"
-        first = u.get("first_name") or ""
-        last = u.get("last_name") or ""
-        name_str = f"{first} {last}".strip() or "بدون نام"
-        last_seen = u.get("last_seen") or "نامشخص"
-        is_owner = " 👑 (مالک)" if u["user_id"] == ADMIN_ID else ""
+    # If there are users, also send a convenient downloadable text file
+    if users:
+        from aiogram.types import BufferedInputFile
+        txt_lines = [
+            f"گزارش کامل کاربران ربات @Timod27_Bot",
+            f"تعداد کل کاربران: {len(users)} نفر",
+            "=" * 50,
+        ]
+        for idx, u in enumerate(users, start=1):
+            name = f"{u.get('first_name') or ''} {u.get('last_name') or ''}".strip() or "بدون نام"
+            uname = f"@{u.get('username')}" if u.get('username') else "ندارد"
+            fs = to_shamsi_tehran(u.get('first_seen'))
+            ls = to_shamsi_tehran(u.get('last_seen'))
+            txt_lines.append(f"{idx}. {name} | آیدی: {u.get('user_id')} | یوزرنیم: {uname}")
+            txt_lines.append(f"   اولین استارت: {fs}")
+            txt_lines.append(f"   آخرین فعالیت: {ls}")
+            txt_lines.append("-" * 40)
 
-        lines.append(
-            f"{idx}️⃣ <b>{name_str}</b>{is_owner}\n"
-            f"   • آیدی عددی: <code>{u['user_id']}</code>\n"
-            f"   • یوزرنیم: {username_str}\n"
-            f"   • آخرین فعالیت: <code>{last_seen}</code>"
-        )
-
-    await message.reply("\n".join(lines), parse_mode="HTML")
+        file_bytes = "\n".join(txt_lines).encode("utf-8")
+        doc = BufferedInputFile(file_bytes, filename="users_list_shamsi.txt")
+        await message.reply_document(doc, caption="📁 فایل متنی کامل مشخصات کاربران ربات (تاریخ شمسی و ساعت تهران)")
 
 
 @router.message(F.document)
