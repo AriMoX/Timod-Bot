@@ -85,13 +85,7 @@ async def handle_inline_query(inline_query: InlineQuery):
         await inline_query.answer(results=[no_result], cache_time=5, is_personal=True)
         return
 
-    # 3. Background pre-cache top tracks without blocking inline search response
-    if tracks:
-        asyncio.create_task(get_or_prepare_spotify_mp3(tracks[0]))
-        if len(tracks) > 1:
-            asyncio.create_task(get_or_prepare_spotify_mp3(tracks[1]))
-        if len(tracks) > 2:
-            asyncio.create_task(get_or_prepare_spotify_mp3(tracks[2]))
+    # Removed dangerous pre-caching tasks that were causing server lockups during typing.
 
     # 4. Construct direct Audio Results using a fast dummy URL to bypass Telegram timeouts
     results = []

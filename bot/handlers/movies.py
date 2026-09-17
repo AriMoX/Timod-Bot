@@ -971,13 +971,7 @@ async def _execute_music_search(message: Message, query: str):
         markup = InlineKeyboardMarkup(inline_keyboard=more_buttons)
         await message.answer("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
 
-        # Background pre-cache the top 3 tracks to make download instant if they click them!
-        import asyncio
-        asyncio.create_task(get_or_prepare_spotify_mp3(tracks[0]))
-        if len(tracks) > 1:
-            asyncio.create_task(get_or_prepare_spotify_mp3(tracks[1]))
-        if len(tracks) > 2:
-            asyncio.create_task(get_or_prepare_spotify_mp3(tracks[2]))
+        # Removed dangerous pre-caching tasks.
 
     except Exception as e:
         logger.exception("Error in _execute_music_search for %s: %s", query, e)
