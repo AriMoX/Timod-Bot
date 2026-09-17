@@ -840,6 +840,21 @@ async def handle_f2m_new_search(callback: CallbackQuery, state: FSMContext):
     )
 
 
+@router.callback_query(F.data == "f2m_new_search_music")
+async def handle_f2m_new_search_music(callback: CallbackQuery, state: FSMContext):
+    """Handle inline button 'جستجوی یک آهنگ دیگر': prompt user for a new music query."""
+    await state.set_state(SearchStates.waiting_for_music)
+    await callback.answer("🎵 جستجوی آهنگ جدید")
+    await callback.message.answer(
+        "🎵 <b>جستجو و دانلود موزیک (اسپاتیفای):</b>\n\n"
+        "لطفاً نام آهنگ یا خواننده مورد نظر خود را ارسال کنید:\n"
+        "*(به عنوان مثال: <code>Without Me</code> یا <code>شایع</code>)*\n\n"
+        "💡 <i>دکمه‌های منوی اصلی و انصراف همیشه در پایین صفحه در دسترس شما هستند.</i>",
+        reply_markup=MAIN_MENU_KEYBOARD,
+        parse_mode="HTML",
+    )
+
+
 @router.callback_query(F.data.startswith("f2m_page:") | F.data.startswith("f2m_spage:"))
 async def handle_f2m_page(callback: CallbackQuery):
     """Handle flipping pages for series or qualities without re-sending the whole message."""
@@ -911,11 +926,12 @@ async def _execute_music_search(message: Message, query: str):
 
     try:
         tracks = await search_spotify(query, limit=5)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
         if not tracks:
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
             await message.answer(
                 f"❌ موزیکی برای عبارت «<b>{html.escape(query)}</b>» یافت نشد.\n\n"
                 "💡 <i>نکته: نام قطعه یا خواننده را بررسی و مجدداً امتحان کنید.</i>",
@@ -923,54 +939,45 @@ async def _execute_music_search(message: Message, query: str):
             )
             return
 
-        top_track = tracks[0]
+        # Prepare instant interactive list of found tracks
+        text_lines = [
+            f"🎵 <b>نتایج جستجو برای «{html.escape(query)}»:</b>\n",
+            "لطفاً قطعه مورد نظر خود را برای دانلود مستقیم انتخاب کنید:\n",
+        ]
+        
+        more_buttons = []
+        for idx, trk in enumerate(tracks, start=1):
+            t_id = trk.track_id or uuid.uuid4().hex[:8]
+            _MUSIC_CACHE[t_id] = trk
+            
+            # Format text in the message
+            duration_str = ""
+            if trk.duration:
+                m, s = divmod(trk.duration, 60)
+                duration_str = f" [{m}:{s:02d}]"
+            text_lines.append(f"{idx}️⃣ <b>{html.escape(trk.title)}</b> - {html.escape(trk.artist)}{duration_str}")
+            
+            # Button for this track
+            btn_txt = f"🎵 {idx}. {trk.title} - {trk.artist}"
+            if len(btn_txt) > 40:
+                btn_txt = btn_txt[:37] + "..."
+            more_buttons.append([InlineKeyboardButton(text=btn_txt, callback_data=f"music_dl:{t_id}")])
 
-        # Prepare audio file
-        audio_path = None
-        try:
-            audio_path = await get_or_prepare_spotify_mp3(top_track)
-        except Exception as pe:
-            logger.warning("Failed preparing top track mp3: %s", pe)
+        more_buttons.append([
+            InlineKeyboardButton(text="🔍 جستجوی یک آهنگ دیگر", callback_data="f2m_new_search_music"),
+            InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+        ])
 
-        if audio_path and audio_path.exists() and audio_path.stat().st_size > 100000:
-            caption = f"🎵 <b>{html.escape(top_track.title)}</b>\n👤 <b>هنرمند:</b> {html.escape(top_track.artist)}\n\n🤖 دانلود شده از ربات @Timod27_Bot"
+        markup = InlineKeyboardMarkup(inline_keyboard=more_buttons)
+        await message.answer("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
 
-            more_buttons = []
-            # Add buttons for other tracks if found
-            for idx, trk in enumerate(tracks[1:4], start=2):
-                t_id = trk.track_id or uuid.uuid4().hex[:8]
-                _MUSIC_CACHE[t_id] = trk
-                btn_txt = f"🎵 {idx}. {trk.title} - {trk.artist}"
-                if len(btn_txt) > 40:
-                    btn_txt = btn_txt[:37] + "..."
-                more_buttons.append([InlineKeyboardButton(text=btn_txt, callback_data=f"music_dl:{t_id}")])
-
-            more_buttons.append([
-                InlineKeyboardButton(text="🔍 جستجوی بیشتر در اینلاین", switch_inline_query_current_chat=query)
-            ])
-
-            markup = InlineKeyboardMarkup(inline_keyboard=more_buttons) if more_buttons else None
-
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-
-            await message.answer_audio(
-                audio=FSInputFile(audio_path),
-                title=top_track.title,
-                performer=top_track.artist,
-                duration=top_track.duration,
-                caption=caption,
-                reply_markup=markup,
-                parse_mode="HTML",
-            )
-        else:
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-            await message.answer("❌ متأسفانه در دانلود فایل صوتی این قطعه خطایی رخ داد. لطفاً قطعه دیگری را انتخاب کنید.")
+        # Background pre-cache the top 3 tracks to make download instant if they click them!
+        import asyncio
+        asyncio.create_task(get_or_prepare_spotify_mp3(tracks[0]))
+        if len(tracks) > 1:
+            asyncio.create_task(get_or_prepare_spotify_mp3(tracks[1]))
+        if len(tracks) > 2:
+            asyncio.create_task(get_or_prepare_spotify_mp3(tracks[2]))
 
     except Exception as e:
         logger.exception("Error in _execute_music_search for %s: %s", query, e)

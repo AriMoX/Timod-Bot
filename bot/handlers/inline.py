@@ -93,10 +93,9 @@ async def handle_inline_query(inline_query: InlineQuery):
         if len(tracks) > 2:
             asyncio.create_task(get_or_prepare_spotify_mp3(tracks[2]))
 
-    # 4. Construct direct Audio Results with NO caption (clean native player)
+    # 4. Construct direct Article Results (avoids timeout)
     results = []
-    server_base = SERVER_PUBLIC_URL.rstrip("/")
-
+    
     for track in tracks:
         cache_key = f"sp_{track.track_id}"
         cached = get_cached_audio(cache_key)
@@ -111,17 +110,25 @@ async def handle_inline_query(inline_query: InlineQuery):
                 )
             )
         else:
-            # B) Direct High-Quality Audio URL (Telegram downloads and sends directly into the chat)
-            direct_audio_url = f"{server_base}/audio/sp_{track.track_id}.mp3"
+            # B) Article result with a button that triggers fast download (no timeout!)
+            duration_str = ""
+            if track.duration:
+                m, s = divmod(track.duration, 60)
+                duration_str = f" ({m}:{s:02d})"
+                
             results.append(
-                InlineQueryResultAudio(
+                InlineQueryResultArticle(
                     id=cache_key,
-                    audio_url=direct_audio_url,
-                    title=track.title,
-                    performer=track.artist,
-                    audio_duration=track.duration if track.duration > 0 else None,
+                    title=f"{track.title}{duration_str}",
+                    description=track.artist,
                     thumbnail_url=track.cover_url,
-                    caption=None,
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"🎵 <b>{html.escape(track.title)}</b>\n👤 {html.escape(track.artist)}\n\n💡 <i>برای دریافت فایل صوتی روی دکمه زیر کلیک کنید:</i>",
+                        parse_mode="HTML"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[InlineKeyboardButton(text="📥 دریافت آهنگ", callback_data=f"sp_{track.track_id}")]]
+                    )
                 )
             )
 
@@ -138,8 +145,25 @@ async def handle_inline_query(inline_query: InlineQuery):
 @router.callback_query(F.data.startswith("sp_") | F.data.startswith("play_"))
 async def handle_play_callback(callback: CallbackQuery):
     track_id = callback.data.removeprefix("sp_").removeprefix("play_")
-    await callback.answer("⏳ در حال دانلود و آماده‌سازی فایل با بالاترین کیفیت...")
+    
+    # If used via inline query outside bot chat where bot is not a member
+    if not callback.message:
+        await callback.answer("⏳ لطفا ربات را استارت کنید تا آهنگ ارسال شود", show_alert=True)
+        bot_me = await callback.bot.get_me()
+        try:
+            await callback.bot.edit_message_text(
+                inline_message_id=callback.inline_message_id,
+                text="🤖 **برای دریافت سریع و مستقیم این آهنگ، ربات را استارت کنید:**",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🎵 استارت ربات و دانلود آهنگ", url=f"https://t.me/{bot_me.username}?start=dl_{track_id}")
+                ]])
+            )
+        except Exception as e:
+            logger.warning("Failed to edit inline message text: %s", e)
+        return
 
+    await callback.answer("⏳ در حال دانلود و آماده‌سازی فایل با بالاترین کیفیت...")
     cache_key = f"sp_{track_id}"
     cached = get_cached_audio(cache_key) or get_cached_audio(track_id)
     if cached and cached.get("file_id"):
