@@ -337,7 +337,7 @@ async def cmd_restore(message: Message):
     await _process_restore_document(message, doc)
 
 
-@router.message(F.document)
+@router.message(F.document, F.from_user.id == ADMIN_ID)
 async def handle_admin_document(message: Message):
     """Allow Admin to upload cookies.txt or restore database backups directly."""
     if not message.from_user or message.from_user.id != ADMIN_ID:
