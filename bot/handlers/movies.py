@@ -12,6 +12,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     FSInputFile,
+    BufferedInputFile,
 )
 from aiogram.enums import ChatAction
 
@@ -20,6 +21,7 @@ from bot.keyboards import MAIN_MENU_KEYBOARD, CANCEL_KEYBOARD
 from bot.services.film2media import (
     search_f2m,
     get_movie_details,
+    download_poster_bytes,
     F2MLinkStore,
 )
 from bot.services.spotify import (
@@ -285,7 +287,7 @@ async def handle_choice_cancel(callback: CallbackQuery):
 # 4. Movie Execution Engine (Film2Media)
 # -------------------------------------------------------------
 async def _execute_f2m_search(message: Message, query: str):
-    """Execute search on Film2Media and display results with interactive buttons."""
+    """Execute search on Film2Media and ALWAYS display full results list with interactive buttons."""
     status_msg = await message.reply(
         f"🔎 در حال جستجوی «<b>{html.escape(query)}</b>» در فیلم‌تو‌مدیا...",
         reply_markup=MAIN_MENU_KEYBOARD,
@@ -298,31 +300,27 @@ async def _execute_f2m_search(message: Message, query: str):
         if not results:
             await status_msg.edit_text(
                 f"❌ نتیجه‌ای برای «<b>{html.escape(query)}</b>» در سایت فیلم‌تو‌مدیا یافت نشد.\n\n"
-                "💡 <i>نکته: نام فیلم را به انگلیسی یا با املای دقیق‌تر جستجو کنید.</i>",
+                "💡 <i>نکته: نام فیلم یا سریال را به فارسی یا انگلیسی با املای دقیق‌تر جستجو کنید.</i>",
                 parse_mode="HTML",
             )
             return
 
-        if len(results) == 1:
-            await status_msg.edit_text("⏳ در حال دریافت کیفیت‌ها و لینک‌های دانلود...")
-            await _show_movie_details(message, results[0]["url"], status_msg)
-            return
-
+        # Always show all found results so user can choose their exact title
         keyboard_buttons = []
         text_lines = [
             f"🎬 <b>نتایج جستجو برای «{html.escape(query)}»:</b>\n",
-            "لطفاً اثر مورد نظر خود را از لیست زیر انتخاب کنید:\n",
+            "لطفاً اثر مورد نظر خود را برای مشاهده کاور آرت و لینک‌های دانلود انتخاب کنید:\n",
         ]
 
-        for idx, item in enumerate(results[:8], start=1):
+        for idx, item in enumerate(results[:10], start=1):
             short_id = F2MLinkStore.save_link(item)
             year_str = f" ({item['year']})" if item.get("year") else ""
             rating_str = f" ⭐️ {item['rating']}" if item.get("rating") else ""
             type_str = "📺" if item.get("is_series") else "🎬"
 
             btn_text = f"{type_str} {idx}. {item['title']}{year_str}"
-            if len(btn_text) > 40:
-                btn_text = btn_text[:37] + "..."
+            if len(btn_text) > 42:
+                btn_text = btn_text[:39] + "..."
 
             keyboard_buttons.append([
                 InlineKeyboardButton(text=btn_text, callback_data=f"f2m_sel:{short_id}")
@@ -347,18 +345,21 @@ async def handle_movie_selection(callback: CallbackQuery):
         await callback.answer("⚠️ اطلاعات این اثر منقضی شده است. لطفاً مجدداً جستجو کنید.", show_alert=True)
         return
 
-    await callback.answer("⏳ در حال دریافت لینک‌های دانلود...")
-    try:
-        await callback.message.edit_text("⏳ در حال دریافت کیفیت‌ها، مشخصات و محاسبه حجم فایل‌ها...")
-    except Exception:
-        pass
+    await callback.answer("⏳ در حال آماده‌سازی کاور و کیفیت‌ها...")
+    status_msg = await callback.message.reply("⏳ در حال دریافت کاور آرت و استخراج لینک‌های دانلود مستقیم...")
 
-    await _show_movie_details(callback.message, item["url"], callback.message)
+    await _show_movie_details(callback.message, item["url"], status_msg, search_item=item)
 
 
-async def _show_movie_details(message: Message, movie_url: str, edit_msg: Message | None = None):
-    """Fetch movie page, parse download links with sizes, and display inline buttons."""
-    details = await get_movie_details(movie_url)
+async def _show_movie_details(
+    message: Message,
+    movie_url: str,
+    edit_msg: Message | None = None,
+    search_item: Optional[dict] = None,
+):
+    """Fetch movie page, parse direct download links with sizes, send cover photo and direct buttons."""
+    search_poster = search_item.get("poster") if search_item else None
+    details = await get_movie_details(movie_url, search_poster=search_poster)
     if not details:
         err_text = "❌ متأسفانه در دریافت اطلاعات و لینک‌های دانلود این اثر خطایی رخ داد."
         if edit_msg:
@@ -369,7 +370,7 @@ async def _show_movie_details(message: Message, movie_url: str, edit_msg: Messag
 
     title = details.get("title", "فیلم / سریال")
     story = details.get("story", "")
-    poster = details.get("poster")
+    poster_url = details.get("poster")
     downloads = details.get("downloads", [])
     is_series = details.get("is_series", False)
     series_seasons = details.get("series_seasons", {})
@@ -380,7 +381,7 @@ async def _show_movie_details(message: Message, movie_url: str, edit_msg: Messag
     if story:
         caption_lines.append(f"📝 <b>خلاصه داستان:</b>\n{html.escape(story)}\n")
     caption_lines.append("━━━━━━━━━━━━━━━━━━━━")
-    caption_lines.append("📥 <b>برای دریافت لینک، کیفیت و حجم مورد نظر را انتخاب کنید:</b>")
+    caption_lines.append("📥 <b>کیفیت مورد نظر خود را برای دریافت لینک دانلود انتخاب کنید:</b>")
 
     caption_text = "\n".join(caption_lines)
     keyboard_rows = []
@@ -391,68 +392,78 @@ async def _show_movie_details(message: Message, movie_url: str, edit_msg: Messag
             size_str = f" | {d['size']}" if d.get("size") else ""
             type_icon = "🎧" if "دوبله" in d.get("type", "") else "📝"
             btn_label = f"{type_icon} {d['quality']} ({d['type']}){size_str}"
-            if len(btn_label) > 45:
+            if len(btn_label) > 46:
                 btn_label = f"{type_icon} {d['quality']}{size_str}"
 
             keyboard_rows.append([
                 InlineKeyboardButton(text=btn_label, callback_data=f"f2m_dl:{short_id}")
             ])
 
+        # Button to deliver all links in one single message
+        all_id = F2MLinkStore.save_link({
+            "title": title,
+            "downloads": downloads,
+        })
+        keyboard_rows.append([
+            InlineKeyboardButton(text="📋 ارسال تمام لینک‌ها به صورت یکجا", callback_data=f"f2m_all:{all_id}")
+        ])
+
     elif is_series and series_seasons:
         for s_name, q_dict in series_seasons.items():
             for q_tag, ep_list in q_dict.items():
-                first_ep = ep_list[0] if ep_list else None
-                if first_ep:
-                    batch_id = F2MLinkStore.save_link({
+                if ep_list:
+                    season_id = F2MLinkStore.save_link({
                         "title": title,
-                        "quality": f"{s_name} - {q_tag}",
-                        "encoder": "",
-                        "type": "سریال",
-                        "url": first_ep["url"],
-                        "size": None,
+                        "season_name": s_name,
+                        "quality": q_tag,
+                        "episodes": ep_list,
                     })
                     keyboard_rows.append([
                         InlineKeyboardButton(
-                            text=f"📁 {s_name} ({q_tag}) - قسمت 1 تا {len(ep_list)}",
-                            callback_data=f"f2m_dl:{batch_id}",
+                            text=f"📁 {s_name} ({q_tag}) - {len(ep_list)} قسمت",
+                            callback_data=f"f2m_season:{season_id}",
                         )
                     ])
 
     if not keyboard_rows:
         keyboard_rows.append([
-            InlineKeyboardButton(text="🔗 باز کردن صفحه دانلود در سایت", url=movie_url)
+            InlineKeyboardButton(text="⚠️ در حال حاضر لینکی برای این اثر موجود نیست", callback_data="noop")
         ])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
-    try:
-        if poster and poster.startswith("http"):
-            if edit_msg:
-                try:
-                    await edit_msg.delete()
-                except Exception:
-                    pass
+    # Download poster image bytes directly so Telegram never fails
+    poster_bytes = None
+    if poster_url:
+        poster_bytes = await download_poster_bytes(poster_url)
+
+    if poster_bytes:
+        if edit_msg:
+            try:
+                await edit_msg.delete()
+            except Exception:
+                pass
+        photo_file = BufferedInputFile(poster_bytes, filename="cover.jpg")
+        try:
             await message.bot.send_photo(
                 chat_id=message.chat.id,
-                photo=poster,
+                photo=photo_file,
                 caption=caption_text,
                 reply_markup=markup,
                 parse_mode="HTML",
             )
-        else:
-            if edit_msg:
-                await edit_msg.edit_text(caption_text, reply_markup=markup, parse_mode="HTML")
-            else:
-                await message.reply(caption_text, reply_markup=markup, parse_mode="HTML")
-    except Exception as pe:
-        logger.warning("Failed to send with photo, falling back to text: %s", pe)
-        if edit_msg:
-            try:
-                await edit_msg.edit_text(caption_text, reply_markup=markup, parse_mode="HTML")
-            except Exception:
-                await message.reply(caption_text, reply_markup=markup, parse_mode="HTML")
-        else:
+            return
+        except Exception as pe:
+            logger.warning("Failed sending photo: %s", pe)
+
+    # Fallback to text message if photo could not be sent
+    if edit_msg:
+        try:
+            await edit_msg.edit_text(caption_text, reply_markup=markup, parse_mode="HTML")
+        except Exception:
             await message.reply(caption_text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await message.reply(caption_text, reply_markup=markup, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("f2m_dl:"))
@@ -465,31 +476,33 @@ async def handle_movie_download_click(callback: CallbackQuery):
         await callback.answer("⚠️ لینک منقضی شده است. لطفاً مجدداً جستجو کنید.", show_alert=True)
         return
 
-    await callback.answer("✅ لینک دانلود آماده شد!")
+    await callback.answer("✅ لینک دانلود مستقیم آماده شد!")
 
     title = item.get("title", "فیلم / سریال")
     quality = item.get("quality", "کیفیت اصلی")
     encoder = item.get("encoder", "")
     type_str = item.get("type", "نسخه اصلی")
-    size_str = item.get("size") or "در فایل لینک موجود است"
+    size_str = item.get("size") or "مشخص در لینک"
     url = item.get("url", "")
 
+    enc_text = f" {encoder}" if encoder else ""
     msg_text = (
-        f"📥 <b>لینک دانلود مستقیم فیلم / سریال:</b>\n\n"
-        f"🎬 <b>عنوان اثر:</b> {html.escape(title)}\n"
-        f"📊 <b>کیفیت:</b> {html.escape(quality)} {html.escape(encoder)}\n"
-        f"🏷 <b>نوع نسخه:</b> {html.escape(type_str)}\n"
-        f"💾 <b>حجم فایل:</b> {html.escape(size_str)}\n"
+        f"📥 <b>لینک دانلود مستقیم:</b>\n\n"
+        f"🎬 <b>{html.escape(title)}</b>\n"
+        f"▫️ <b>کیفیت:</b> <code>{html.escape(quality)}{html.escape(enc_text)}</code>\n"
+        f"▫️ <b>نسخه:</b> {html.escape(type_str)}\n"
+        f"▫️ <b>حجم:</b> <code>{html.escape(size_str)}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 <b>لینک دانلود مستقیم (جهت کپی در دانلود منیجر):</b>\n"
+        f"🔗 <b>لینک مستقیم (جهت کپی در دانلود منیجر):</b>\n"
         f"<code>{url}</code>\n\n"
-        f"💡 <i>راهنما: می‌توانید روی دکمه زیر کلیک کنید تا دانلود مستقیماً در مرورگر یا منیجر شما آغاز شود.</i>"
+        f"💡 <i>روی دکمه زیر کلیک کنید تا دانلود مستقیماً در دانلود منیجر شما آغاز شود:</i>"
     )
 
+    btn_label = f"⬇️ شروع دانلود مستقیم ({size_str})" if item.get("size") else "⬇️ شروع دانلود مستقیم"
     download_markup = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="⬇️ شروع دانلود مستقیم", url=url),
+                InlineKeyboardButton(text=btn_label, url=url),
             ]
         ]
     )
@@ -500,6 +513,79 @@ async def handle_movie_download_click(callback: CallbackQuery):
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
+
+
+@router.callback_query(F.data.startswith("f2m_all:"))
+async def handle_movie_all_links(callback: CallbackQuery):
+    """Handle user clicking 'ارسال تمام لینک‌ها به صورت یکجا': output all direct URLs."""
+    all_id = callback.data.removeprefix("f2m_all:")
+    item = F2MLinkStore.get_link(all_id)
+
+    if not item or not item.get("downloads"):
+        await callback.answer("⚠️ اطلاعات لینک‌ها منقضی شده است.", show_alert=True)
+        return
+
+    await callback.answer("📋 در حال ارسال تمام لینک‌ها...")
+    title = item.get("title", "فیلم")
+    downloads = item.get("downloads", [])
+
+    lines = [
+        f"🎬 <b>تمام لینک‌های دانلود مستقیم برای {html.escape(title)}:</b>\n",
+        "💡 <i>می‌توانید هر یک از لینک‌های زیر را مستقیماً در دانلود منیجر (ADM یا IDM) کپی کنید:</i>\n",
+    ]
+
+    for d in downloads:
+        size_str = f" ({d['size']})" if d.get("size") else ""
+        type_icon = "🎧" if "دوبله" in d.get("type", "") else "📝"
+        lines.append(
+            f"{type_icon} <b>{html.escape(d['quality'])} - {html.escape(d['type'])}{size_str}:</b>\n"
+            f"<code>{d['url']}</code>\n"
+        )
+
+    full_text = "\n".join(lines)
+    if len(full_text) > 3900:
+        chunks = [full_text[i:i+3800] for i in range(0, len(full_text), 3800)]
+        for chunk in chunks:
+            await callback.message.reply(chunk, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        await callback.message.reply(full_text, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("f2m_season:"))
+async def handle_series_season(callback: CallbackQuery):
+    """Handle user clicking on a series season: deliver all episode direct download links."""
+    season_id = callback.data.removeprefix("f2m_season:")
+    item = F2MLinkStore.get_link(season_id)
+
+    if not item or not item.get("episodes"):
+        await callback.answer("⚠️ اطلاعات این فصل منقضی شده است.", show_alert=True)
+        return
+
+    await callback.answer("📁 در حال ارسال لینک‌های قسمت‌ها...")
+    title = item.get("title", "سریال")
+    s_name = item.get("season_name", "فصل")
+    q_tag = item.get("quality", "کیفیت اصلی")
+    episodes = item.get("episodes", [])
+
+    lines = [
+        f"📺 <b>{html.escape(title)}</b>\n"
+        f"📁 <b>{html.escape(s_name)} - کیفیت {html.escape(q_tag)} ({len(episodes)} قسمت):</b>\n\n"
+        "🔗 <b>لینک‌های مستقیم قسمت‌ها (جهت کپی در دانلود منیجر):</b>\n",
+    ]
+
+    for ep in episodes:
+        lines.append(
+            f"🔹 <b>قسمت {ep['episode']}:</b>\n"
+            f"<code>{ep['url']}</code>\n"
+        )
+
+    full_text = "\n".join(lines)
+    if len(full_text) > 3900:
+        chunks = [full_text[i:i+3800] for i in range(0, len(full_text), 3800)]
+        for chunk in chunks:
+            await callback.message.reply(chunk, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        await callback.message.reply(full_text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 # -------------------------------------------------------------

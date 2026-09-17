@@ -84,30 +84,48 @@ async def search_f2m(query: str) -> list[dict]:
         seen_urls = set()
 
         for art in articles:
-            valid_links = re.findall(r'<a\s+[^>]*href=["\'](https://www\.f2mc\.top/[^"\']+)["\'][^>]*>(.*?)</a>', art, re.DOTALL)
-            page_url = None
-            raw_title = ""
-            for h, t in valid_links:
-                if not any(x in h for x in ["genres", "category", "tag", "wp-content", "#", "page/"]):
-                    page_url = h
-                    raw_title = t
-                    break
+            # Match main link
+            link_m = re.search(r'<a[^>]+href=["\'](https://www\.f2mc\.top/[^"\']+)["\'][^>]*class=["\'][^"\']*stretched-link[^"\']*["\']', art, re.I)
+            if not link_m:
+                link_m = re.search(r'class=["\'][^"\']*stretched-link[^"\']*["\'][^>]*href=["\'](https://www\.f2mc\.top/[^"\']+)["\']', art, re.I)
+            if not link_m:
+                # Fallback to any content link
+                valid_links = re.findall(r'<a\s+[^>]*href=["\'](https://www\.f2mc\.top/[^"\']+)["\'][^>]*>(.*?)</a>', art, re.DOTALL)
+                for h, t in valid_links:
+                    if not any(x in h for x in ["genres", "category", "tag", "wp-content", "#", "page/"]):
+                        link_m = type("Obj", (), {"group": lambda self, n: h})()
+                        break
 
-            if not page_url or page_url in seen_urls:
+            if not link_m:
+                continue
+
+            page_url = link_m.group(1)
+            if page_url in seen_urls:
                 continue
             seen_urls.add(page_url)
 
-            clean_title = " ".join(re.sub(r"<[^>]+>", " ", raw_title).split()).strip()
+            # Title: prefer h2.entry-title
+            h2_m = re.search(r'<h2[^>]*class=["\'][^"\']*entry-title[^"\']*["\'][^>]*>(.*?)</h2>', art, re.DOTALL | re.I)
+            if not h2_m:
+                h2_m = re.search(r'<h2[^>]*>(.*?)</h2>', art, re.DOTALL | re.I)
+            clean_title = " ".join(re.sub(r"<[^>]+>", " ", h2_m.group(1)).split()).strip() if h2_m else ""
+
+            # Poster
             img_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', art)
             poster = img_m.group(1) if img_m else None
 
-            snippet = " ".join(re.sub(r"<[^>]+>", " ", art).split())
-            year_m = re.search(r"\b(19\d\d|20\d\d)\b", snippet)
+            # Meta: Year and Rating
+            year_m = re.search(r'#icon-calendar.*?(\b(?:19\d\d|20\d\d)\b)', art, re.DOTALL)
+            if not year_m:
+                year_m = re.search(r"\b(19\d\d|20\d\d)\b", art)
             year = year_m.group(1) if year_m else ""
 
-            imdb_m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*10", snippet)
+            imdb_m = re.search(r'#icon-imdb.*?<strong[^>]*>([\d\.]+)</strong>', art, re.DOTALL)
+            if not imdb_m:
+                imdb_m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*10", art)
             rating = imdb_m.group(1) if imdb_m else ""
-            is_series = "/series/" in page_url or "سریال" in snippet or "فصل" in snippet
+
+            is_series = "/series/" in page_url or "سریال" in art or "سریال" in clean_title
 
             results.append({
                 "title": clean_title or "فیلم / سریال",
@@ -116,7 +134,6 @@ async def search_f2m(query: str) -> list[dict]:
                 "year": year,
                 "rating": rating,
                 "is_series": is_series,
-                "snippet": snippet[:150],
             })
 
     except Exception as e:
@@ -125,7 +142,28 @@ async def search_f2m(query: str) -> list[dict]:
     return results
 
 
-async def get_movie_details(url: str) -> Optional[dict]:
+async def download_poster_bytes(poster_url: str) -> Optional[bytes]:
+    """Download poster image bytes directly to bypass Telegram server fetch blocks."""
+    if not poster_url or not poster_url.startswith("http"):
+        return None
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": f"{BASE_URL}/",
+        }
+        conn = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=conn, headers=headers) as session:
+            async with session.get(poster_url, timeout=aiohttp.ClientTimeout(total=8.0)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    if len(data) > 1000:
+                        return data
+    except Exception as e:
+        logger.warning("Error downloading poster bytes from %s: %s", poster_url, e)
+    return None
+
+
+async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Optional[dict]:
     """Fetch and parse movie or series detail page with download links."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -143,10 +181,26 @@ async def get_movie_details(url: str) -> Optional[dict]:
         title_m = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL | re.IGNORECASE)
         title = " ".join(re.sub(r"<[^>]+>", " ", title_m.group(1)).split()).strip() if title_m else "فیلم / سریال"
 
-        poster_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*class=["\'][^"\']*(?:poster|thumb|wp-post-image)[^"\']*["\']', html, re.IGNORECASE)
-        if not poster_m:
-            poster_m = re.search(r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
-        poster = poster_m.group(1) if poster_m else None
+        # Poster detection: check multiple sources
+        poster = None
+        poster_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*class=["\'][^"\']*(?:poster|thumb|wp-post-image|attachment)[^"\']*["\']', html, re.IGNORECASE)
+        if poster_m:
+            poster = poster_m.group(1)
+
+        if not poster:
+            og_m = re.search(r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if og_m and "public_html" not in og_m.group(1) and any(og_m.group(1).lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                poster = og_m.group(1)
+
+        if not poster:
+            imgs = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html)
+            for img in imgs:
+                if "wp-content/uploads" in img and any(img.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"]) and not any(bad in img.lower() for bad in ["player", "icon", "logo"]):
+                    poster = img
+                    break
+
+        if not poster and search_poster:
+            poster = search_poster
 
         story = ""
         story_m = re.search(r'<div[^>]*class=["\'][^"\']*(?:story|summary|plot|entry-content)[^"\']*["\'][^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
@@ -155,12 +209,18 @@ async def get_movie_details(url: str) -> Optional[dict]:
             if len(story) > 350:
                 story = story[:345] + "..."
 
-        is_series = "/series/" in url or "سریال" in title or "فصل" in html
+        # Direct media files
+        all_media_links = re.findall(r'href=["\']([^"\']+\.(?:mkv|mp4)[^"\']*)["\']', html)
+
+        # Detect series accurately: /series/ in URL or S01E01 media links
+        has_episodes = any(bool(re.search(r'[./]S\d+E\d+', u, re.I)) for u in all_media_links)
+        is_series = "/series/" in url or ("سریال" in title and has_episodes) or has_episodes
 
         movie_downloads = []
-        dl_matches = re.findall(r'(<li[^>]*>(?:(?!<li).)*?href=["\']([^"\']+\.(?:mkv|mp4)[^"\']*)["\'].*?</li>)', html, re.DOTALL | re.IGNORECASE)
-
         seen_urls = set()
+
+        # 1. Parse from structured <li> elements
+        dl_matches = re.findall(r'(<li[^>]*>(?:(?!<li).)*?href=["\']([^"\']+\.(?:mkv|mp4)[^"\']*)["\'].*?</li>)', html, re.DOTALL | re.IGNORECASE)
         for li_html, media_url in dl_matches:
             if media_url in seen_urls:
                 continue
@@ -189,9 +249,38 @@ async def get_movie_details(url: str) -> Optional[dict]:
                 "size": None,
             })
 
+        # 2. If movie_downloads is empty and it is NOT a series, parse all media links directly
+        if not movie_downloads and not is_series:
+            for m_url in all_media_links:
+                if m_url in seen_urls:
+                    continue
+                seen_urls.add(m_url)
+
+                # Infer quality from filename
+                q = "720p"
+                if "1080p" in m_url:
+                    q = "1080p BluRay" if "bluray" in m_url.lower() else "1080p WEB-DL"
+                elif "720p" in m_url:
+                    q = "720p BluRay" if "bluray" in m_url.lower() else "720p WEB-DL"
+                elif "480p" in m_url:
+                    q = "480p"
+                elif "2160p" in m_url or "4k" in m_url.lower():
+                    q = "4K 2160p"
+
+                is_dub = "DUB" in m_url or "dubbed" in m_url.lower()
+                t_str = "دوبله فارسی" if is_dub else "زیرنویس فارسی"
+
+                movie_downloads.append({
+                    "quality": q,
+                    "encoder": "",
+                    "type": t_str,
+                    "url": m_url,
+                    "size": None,
+                })
+
+        # Series seasons and episodes
         series_seasons = {}
         if is_series:
-            all_media_links = re.findall(r'href=["\']([^"\']+\.(?:mkv|mp4)[^"\']*)["\']', html)
             for m_url in all_media_links:
                 ep_match = re.search(r'[./]S(\d+)E(\d+)', m_url, re.IGNORECASE)
                 if ep_match:
@@ -200,7 +289,7 @@ async def get_movie_details(url: str) -> Optional[dict]:
                     s_key = f"فصل {s_num}"
                     if s_key not in series_seasons:
                         series_seasons[s_key] = {}
-                    
+
                     q_tag = "720p"
                     if "1080p" in m_url:
                         q_tag = "1080p"
@@ -211,7 +300,7 @@ async def get_movie_details(url: str) -> Optional[dict]:
 
                     if q_tag not in series_seasons[s_key]:
                         series_seasons[s_key][q_tag] = []
-                    
+
                     series_seasons[s_key][q_tag].append({
                         "episode": e_num,
                         "url": m_url,
