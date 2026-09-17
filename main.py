@@ -614,15 +614,27 @@ async def main():
     from bot.services.user_storage import start_periodic_backup_worker
     asyncio.create_task(start_periodic_backup_worker(bot, interval_hours=6))
 
+    while True:
+        try:
+            await dp.start_polling(
+                bot,
+                drop_pending_updates=True,
+                allowed_updates=dp.resolve_used_update_types(),
+            )
+            break
+        except Exception as e:
+            err_str = str(e).lower()
+            if "conflict" in err_str or "terminated by other" in err_str:
+                print(f"⚠️ Telegram conflict detected: {e}. Retrying in 5 seconds...", flush=True)
+                await asyncio.sleep(5)
+                continue
+            logger.exception("Fatal error in polling loop: %s", e)
+            break
     try:
-        await dp.start_polling(
-            bot,
-            drop_pending_updates=True,
-            allowed_updates=dp.resolve_used_update_types(),
-        )
-    finally:
         await bot.session.close()
-        print("Bot session closed.", flush=True)
+    except Exception:
+        pass
+    print("Bot session closed.", flush=True)
 
 
 if __name__ == "__main__":

@@ -588,6 +588,11 @@ async def handle_series_season(callback: CallbackQuery):
         await callback.message.reply(full_text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+@router.callback_query(F.data == "noop")
+async def handle_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
 # -------------------------------------------------------------
 # 5. Music Execution Engine (Spotify / Audio)
 # -------------------------------------------------------------
