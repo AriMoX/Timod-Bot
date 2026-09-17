@@ -144,7 +144,7 @@ async def search_f2m(query: str) -> list[dict]:
         try:
             conn = aiohttp.TCPConnector(ssl=False)
             async with aiohttp.ClientSession(connector=conn, headers=headers) as session:
-                async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+                async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=20.0, connect=8.0, sock_read=15.0)) as resp:
                     if resp.status != 200:
                         logger.warning("F2M search returned HTTP %s for %s", resp.status, search_term)
                         return []
@@ -237,8 +237,21 @@ async def download_poster_bytes(poster_url: str) -> Optional[bytes]:
     return None
 
 
+_DETAILS_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = 3600  # 1 hour
+
+
 async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Optional[dict]:
     """Fetch and parse movie or series detail page with download links."""
+    now = time.time()
+    if url in _DETAILS_CACHE:
+        cached_time, cached_data = _DETAILS_CACHE[url]
+        if now - cached_time < _CACHE_TTL:
+            res_copy = dict(cached_data)
+            if search_poster and not res_copy.get("poster"):
+                res_copy["poster"] = search_poster
+            return res_copy
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Referer": f"{BASE_URL}/",
@@ -247,7 +260,7 @@ async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Op
     try:
         conn = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(connector=conn, headers=headers) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=12.0)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=45.0, connect=10.0, sock_read=35.0)) as resp:
                 if resp.status != 200:
                     return None
                 html = await resp.text(errors="ignore")
@@ -381,6 +394,11 @@ async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Op
                         "size": None,
                     })
 
+            # Sort episodes numerically within each season and quality
+            for s_k, q_map in series_seasons.items():
+                for q_t, ep_arr in q_map.items():
+                    ep_arr.sort(key=lambda x: x.get("episode", 0))
+
         # Pre-fetch sizes for movie downloads concurrently
         if movie_downloads:
             try:
@@ -405,7 +423,7 @@ async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Op
                 "size": item.get("size"),
             })
 
-        return {
+        result = {
             "title": title,
             "url": url,
             "poster": poster,
@@ -414,6 +432,8 @@ async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Op
             "downloads": movie_downloads,
             "series_seasons": series_seasons,
         }
+        _DETAILS_CACHE[url] = (time.time(), result)
+        return result
 
     except Exception as e:
         logger.exception("Error getting movie details for %s: %s", url, e)

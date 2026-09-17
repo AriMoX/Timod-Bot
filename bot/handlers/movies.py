@@ -405,11 +405,76 @@ async def handle_movie_selection(callback: CallbackQuery):
     await _show_movie_details(callback.message, item["url"], status_msg, search_item=item)
 
 
+PAGE_SIZE = 6
+
+
+def build_paginated_keyboard(
+    menu_id: str,
+    items: list[dict],
+    page: int = 1,
+    page_size: int = PAGE_SIZE,
+    all_id: Optional[str] = None,
+) -> InlineKeyboardMarkup:
+    """Build an InlineKeyboardMarkup for a list of items with pagination controls."""
+    total_items = len(items)
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_items = items[start_idx:end_idx]
+
+    rows = []
+    for it in page_items:
+        rows.append([
+            InlineKeyboardButton(text=it["text"], callback_data=it["callback_data"])
+        ])
+
+    if all_id:
+        rows.append([
+            InlineKeyboardButton(text="📋 ارسال تمام لینک‌ها به صورت یکجا", callback_data=f"f2m_all:{all_id}")
+        ])
+
+    if total_pages > 1:
+        pag_row = []
+        if page < total_pages:
+            pag_row.append(
+                InlineKeyboardButton(
+                    text="◀️ صفحه بعد",
+                    callback_data=f"f2m_page:{menu_id}:{page + 1}",
+                )
+            )
+
+        pag_row.append(
+            InlineKeyboardButton(
+                text=f"📄 {page} از {total_pages}",
+                callback_data="noop",
+            )
+        )
+
+        if page > 1:
+            pag_row.append(
+                InlineKeyboardButton(
+                    text="صفحه قبل ▶️",
+                    callback_data=f"f2m_page:{menu_id}:{page - 1}",
+                )
+            )
+        rows.append(pag_row)
+
+    rows.append([
+        InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
+        InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def _show_movie_details(
     message: Message,
     movie_url: str,
     edit_msg: Message | None = None,
     search_item: Optional[dict] = None,
+    initial_page: int = 1,
 ):
     """Fetch movie page, parse direct download links with sizes, send cover photo and direct buttons."""
     search_poster = search_item.get("poster") if search_item else None
@@ -429,16 +494,8 @@ async def _show_movie_details(
     is_series = details.get("is_series", False)
     series_seasons = details.get("series_seasons", {})
 
-    caption_lines = [
-        f"🎬 <b>{html.escape(title)}</b>\n",
-    ]
-    if story:
-        caption_lines.append(f"📝 <b>خلاصه داستان:</b>\n{html.escape(story)}\n")
-    caption_lines.append("━━━━━━━━━━━━━━━━━━━━")
-    caption_lines.append("📥 <b>کیفیت مورد نظر خود را برای دریافت لینک دانلود انتخاب کنید:</b>")
-
-    caption_text = "\n".join(caption_lines)
-    keyboard_rows = []
+    items = []
+    all_id = None
 
     if downloads and not is_series:
         for d in downloads:
@@ -449,49 +506,94 @@ async def _show_movie_details(
             if len(btn_label) > 46:
                 btn_label = f"{type_icon} {d['quality']}{size_str}"
 
-            keyboard_rows.append([
-                InlineKeyboardButton(text=btn_label, callback_data=f"f2m_dl:{short_id}")
-            ])
+            items.append({
+                "text": btn_label,
+                "callback_data": f"f2m_dl:{short_id}",
+            })
 
-        # Button to deliver all links in one single message
         all_id = F2MLinkStore.save_link({
             "title": title,
             "movie_url": movie_url,
             "downloads": downloads,
         })
-        keyboard_rows.append([
-            InlineKeyboardButton(text="📋 ارسال تمام لینک‌ها به صورت یکجا", callback_data=f"f2m_all:{all_id}")
-        ])
 
     elif is_series and series_seasons:
-        for s_name, q_dict in series_seasons.items():
-            for q_tag, ep_list in q_dict.items():
+        def _season_num(s_name: str) -> int:
+            m = re.search(r'\d+', s_name)
+            return int(m.group(0)) if m else 999
+
+        sorted_seasons = sorted(series_seasons.items(), key=lambda x: _season_num(x[0]))
+        q_order = {"4k": 1, "2160p": 1, "1080p": 2, "720p": 3, "480p": 4}
+
+        for s_name, q_dict in sorted_seasons:
+            sorted_qualities = sorted(
+                q_dict.items(),
+                key=lambda x: q_order.get(x[0].lower(), 10)
+            )
+            for q_tag, ep_list in sorted_qualities:
                 if ep_list:
+                    ep_list.sort(key=lambda x: x.get("episode", 0))
+                    item_page = (len(items) // PAGE_SIZE) + 1
                     season_id = F2MLinkStore.save_link({
                         "title": title,
                         "movie_url": movie_url,
                         "season_name": s_name,
                         "quality": q_tag,
                         "episodes": ep_list,
+                        "page": item_page,
                     })
-                    keyboard_rows.append([
-                        InlineKeyboardButton(
-                            text=f"📁 {s_name} ({q_tag}) - {len(ep_list)} قسمت",
-                            callback_data=f"f2m_season:{season_id}",
-                        )
-                    ])
+                    items.append({
+                        "text": f"📁 {s_name} ({q_tag}) - {len(ep_list)} قسمت",
+                        "callback_data": f"f2m_season:{season_id}",
+                    })
 
-    if not keyboard_rows:
-        keyboard_rows.append([
-            InlineKeyboardButton(text="⚠️ در حال حاضر لینکی برای این اثر موجود نیست", callback_data="noop")
+    # Caption preparation with strict length limit (< 1000 chars)
+    caption_lines = [
+        f"🎬 <b>{html.escape(title)}</b>\n",
+    ]
+    if story:
+        caption_lines.append(f"📝 <b>خلاصه داستان:</b>\n{html.escape(story)}\n")
+    caption_lines.append("━━━━━━━━━━━━━━━━━━━━")
+    if is_series:
+        caption_lines.append("📥 <b>فصل و کیفیت مورد نظر خود را برای مشاهده قسمت‌ها انتخاب کنید:</b>")
+    else:
+        caption_lines.append("📥 <b>کیفیت مورد نظر خود را برای دریافت لینک دانلود انتخاب کنید:</b>")
+
+    total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
+    if total_pages > 1:
+        caption_lines.append(f"💡 <i>(دارای {total_pages} صفحه - با دکمه‌های زیر ورق بزنید)</i>")
+
+    caption_text = "\n".join(caption_lines)
+    if len(caption_text) > 1000:
+        avail = 1000 - len(title) - 200
+        if avail > 60:
+            short_story = story[:avail] + "..."
+            caption_lines[1] = f"📝 <b>خلاصه داستان:</b>\n{html.escape(short_story)}\n"
+            caption_text = "\n".join(caption_lines)
+        else:
+            caption_text = f"🎬 <b>{html.escape(title)}</b>\n\n📥 <b>کیفیت یا فصل مورد نظر خود را انتخاب کنید:</b>"
+
+    if not items:
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚠️ در حال حاضر لینکی برای این اثر موجود نیست", callback_data="noop")],
+            [
+                InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
+                InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
+            ]
         ])
-
-    keyboard_rows.append([
-        InlineKeyboardButton(text="🔍 جستجوی یک اثر دیگر", callback_data="f2m_new_search"),
-        InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="f2m_main_menu"),
-    ])
-
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    else:
+        menu_id = F2MLinkStore.save_link({
+            "type": "paginated_menu",
+            "items": items,
+            "all_id": all_id,
+        })
+        markup = build_paginated_keyboard(
+            menu_id=menu_id,
+            items=items,
+            page=initial_page,
+            page_size=PAGE_SIZE,
+            all_id=all_id,
+        )
 
     # Download poster image bytes directly so Telegram never fails
     poster_bytes = None
@@ -713,9 +815,49 @@ async def handle_f2m_new_search(callback: CallbackQuery, state: FSMContext):
     )
 
 
+@router.callback_query(F.data.startswith("f2m_page:") | F.data.startswith("f2m_spage:"))
+async def handle_f2m_page(callback: CallbackQuery):
+    """Handle flipping pages for series or qualities without re-sending the whole message."""
+    raw = callback.data
+    prefix = "f2m_spage:" if raw.startswith("f2m_spage:") else "f2m_page:"
+    parts = raw.removeprefix(prefix).split(":")
+    if len(parts) != 2:
+        await callback.answer()
+        return
+
+    menu_id, page_str = parts[0], parts[1]
+    try:
+        page = int(page_str)
+    except ValueError:
+        page = 1
+
+    menu_data = F2MLinkStore.get_link(menu_id)
+    if not menu_data or "items" not in menu_data:
+        await callback.answer("⚠️ اطلاعات این صفحه منقضی شده است. لطفاً مجدداً جستجو کنید.", show_alert=True)
+        return
+
+    items = menu_data["items"]
+    all_id = menu_data.get("all_id")
+    new_markup = build_paginated_keyboard(
+        menu_id=menu_id,
+        items=items,
+        page=page,
+        page_size=PAGE_SIZE,
+        all_id=all_id,
+    )
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_markup)
+        total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
+        await callback.answer(f"📄 صفحه {page} از {total_pages}")
+    except Exception as e:
+        logger.warning("Error editing page reply markup: %s", e)
+        await callback.answer()
+
+
 @router.callback_query(F.data.startswith("f2m_back_to:"))
 async def handle_f2m_back_to(callback: CallbackQuery):
-    """Handle returning back to the movie details / seasons list."""
+    """Handle returning back to the movie details / seasons list on the exact same page."""
     ref_id = callback.data.removeprefix("f2m_back_to:")
     item = F2MLinkStore.get_link(ref_id)
     movie_url = item.get("movie_url") if item else None
@@ -724,9 +866,10 @@ async def handle_f2m_back_to(callback: CallbackQuery):
         await callback.answer("⚠️ اطلاعات این اثر یافت نشد. لطفاً مجدداً جستجو کنید.", show_alert=True)
         return
 
+    initial_page = item.get("page", 1)
     await callback.answer("⏳ در حال بازگشت به مشخصات اثر...")
-    status_msg = await callback.message.answer("⏳ در حال دریافت مجدد مشخصات اثر...")
-    await _show_movie_details(callback.message, movie_url, status_msg, search_item=item)
+    status_msg = await callback.message.answer("⏳ در حال بازگشت به لیست کیفیت‌ها...")
+    await _show_movie_details(callback.message, movie_url, status_msg, search_item=item, initial_page=initial_page)
 
 
 # -------------------------------------------------------------
