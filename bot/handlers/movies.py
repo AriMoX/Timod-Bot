@@ -352,7 +352,36 @@ async def handle_movie_selection(callback: CallbackQuery):
     short_id = callback.data.removeprefix("f2m_sel:")
     item = F2MLinkStore.get_link(short_id)
 
+    # If item is missing (e.g. from an old button before restart), smartly recover from button label!
     if not item or not item.get("url"):
+        recovered_title = None
+        try:
+            if callback.message and callback.message.reply_markup:
+                for row in callback.message.reply_markup.inline_keyboard:
+                    for btn in row:
+                        if btn.callback_data == callback.data:
+                            cleaned = re.sub(r"^(?:🎬|📺)\s*\d+\.\s*", "", btn.text)
+                            recovered_title = re.sub(r"\s*\(\d{4}\)$", "", cleaned).strip()
+                            break
+        except Exception:
+            pass
+
+        if recovered_title:
+            await callback.answer("⏳ در حال بازیابی و دریافت اطلاعات اثر...")
+            status_msg = await callback.message.reply(f"⏳ در حال استخراج کاور آرت و لینک‌های دانلود برای <b>{html.escape(recovered_title)}</b>...", parse_mode="HTML")
+            try:
+                results = await search_f2m(recovered_title)
+                if results:
+                    best_match = results[0]
+                    await _show_movie_details(callback.message, best_match["url"], status_msg, search_item=best_match)
+                    return
+            except Exception as e:
+                logger.warning("Recovery search failed for %s: %s", recovered_title, e)
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
         await callback.answer("⚠️ اطلاعات این اثر منقضی شده است. لطفاً مجدداً جستجو کنید.", show_alert=True)
         return
 

@@ -11,31 +11,65 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.f2mc.top"
 
-# Short ID Store for Telegram callback_data (max 64 bytes)
+import sqlite3
+import json
+from bot.config import BASE_DIR
+
+DB_PATH = BASE_DIR / "bot_database.db"
+
+def _init_link_store_db():
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS f2m_links (
+                    short_id TEXT PRIMARY KEY,
+                    data_json TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_f2m_links_created ON f2m_links (created_at)")
+            conn.commit()
+    except Exception as e:
+        logger.warning("Error initializing f2m_links table: %s", e)
+
+_init_link_store_db()
+
+# Short ID Store for Telegram callback_data (persisted in SQLite + cached in memory)
 class F2MLinkStore:
-    _data: dict[str, dict] = {}
-    _timestamps: dict[str, float] = {}
+    _cache: dict[str, dict] = {}
 
     @classmethod
     def save_link(cls, item: dict) -> str:
-        """Store link details and return an 8-character short key."""
+        """Store link details in memory and persistent SQLite database."""
         short_id = uuid.uuid4().hex[:8]
-        cls._data[short_id] = item
-        cls._timestamps[short_id] = time.time()
-        cls._cleanup()
+        cls._cache[short_id] = item
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO f2m_links (short_id, data_json, created_at) VALUES (?, ?, ?)",
+                    (short_id, json.dumps(item, ensure_ascii=False), time.time())
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning("Error persisting f2m_link to SQLite: %s", e)
         return short_id
 
     @classmethod
     def get_link(cls, short_id: str) -> Optional[dict]:
-        return cls._data.get(short_id)
-
-    @classmethod
-    def _cleanup(cls):
-        now = time.time()
-        expired = [k for k, t in cls._timestamps.items() if now - t > 7200]
-        for k in expired:
-            cls._data.pop(k, None)
-            cls._timestamps.pop(k, None)
+        """Fetch link from in-memory cache or SQLite database."""
+        if short_id in cls._cache:
+            return cls._cache[short_id]
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.execute("SELECT data_json FROM f2m_links WHERE short_id = ?", (short_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    item = json.loads(row[0])
+                    cls._cache[short_id] = item
+                    return item
+        except Exception as e:
+            logger.warning("Error retrieving f2m_link from SQLite: %s", e)
+        return None
 
 
 def _format_size(bytes_num: int) -> str:
