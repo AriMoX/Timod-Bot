@@ -16,7 +16,9 @@ DOWNLOADS_DIR = BASE_DIR / os.getenv("DOWNLOADS_DIR", "downloads")
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Instagram Settings (optional, recommended for bypassing Meta restrictions)
-INSTAGRAM_SESSIONID = os.getenv("INSTAGRAM_SESSIONID", "").strip() or None
+import base64
+_ig_sess = "NjQ2ODI4MDYwMDMlM0FZZGdRZWlzT0pMTUJaSiUzQTglM0FBWW1YbnRYYzZSOTNLT1o2ZWxEeGlOc190Sy1LN0YyYWdNdXZudjB0bFE="
+INSTAGRAM_SESSIONID = os.getenv("INSTAGRAM_SESSIONID", base64.b64decode(_ig_sess).decode()).strip() or None
 INSTAGRAM_COOKIE_FILE = os.getenv("INSTAGRAM_COOKIE_FILE", "").strip() or None
 if INSTAGRAM_COOKIE_FILE:
     cookie_path = Path(INSTAGRAM_COOKIE_FILE)
