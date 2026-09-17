@@ -10,7 +10,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from aiohttp import web
-from bot.config import BOT_TOKEN, PROXY_URL, REQUIRED_CHANNEL
+from bot.config import BOT_TOKEN, PROXY_URL, REQUIRED_CHANNEL, ADMIN_ID
 from bot.handlers.common import router as common_router
 from bot.handlers.downloader import router as downloader_router
 from bot.handlers.video_note import router as video_note_router
