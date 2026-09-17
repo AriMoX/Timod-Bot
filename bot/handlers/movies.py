@@ -501,10 +501,10 @@ async def _show_movie_details(
         for d in downloads:
             short_id = d.get("short_id")
             size_str = f" | {d['size']}" if d.get("size") else ""
-            type_icon = "🎧" if "دوبله" in d.get("type", "") else "📝"
-            btn_label = f"{type_icon} {d['quality']} ({d['type']}){size_str}"
+            type_icon = "🎙" if "دوبله" in d.get("type", "") else "📝"
+            btn_label = f"{type_icon} {d['quality']} [{d['type']}]{size_str}"
             if len(btn_label) > 46:
-                btn_label = f"{type_icon} {d['quality']}{size_str}"
+                btn_label = f"{type_icon} {d['quality']} [{d['type'][:12]}]{size_str}"
 
             items.append({
                 "text": btn_label,
@@ -523,27 +523,45 @@ async def _show_movie_details(
             return int(m.group(0)) if m else 999
 
         sorted_seasons = sorted(series_seasons.items(), key=lambda x: _season_num(x[0]))
-        q_order = {"4k": 1, "2160p": 1, "1080p": 2, "720p": 3, "480p": 4}
+
+        def _q_sort_key(key_str: str) -> tuple:
+            is_dub = "دوبله" in key_str
+            q_order = {"4k": 1, "2160p": 1, "1080p": 2, "720p": 3, "480p": 4}
+            q_score = 10
+            for q_name, score in q_order.items():
+                if q_name in key_str.lower():
+                    q_score = score
+                    break
+            # Dubbed first (0), then Subtitled (1), sorted by quality
+            return (0 if is_dub else 1, q_score)
 
         for s_name, q_dict in sorted_seasons:
             sorted_qualities = sorted(
                 q_dict.items(),
-                key=lambda x: q_order.get(x[0].lower(), 10)
+                key=lambda x: _q_sort_key(x[0])
             )
-            for q_tag, ep_list in sorted_qualities:
+            for q_key, ep_list in sorted_qualities:
                 if ep_list:
                     ep_list.sort(key=lambda x: x.get("episode", 0))
+                    sample_ep = ep_list[0]
+                    q_tag = sample_ep.get("quality", q_key.split(" - ")[0])
+                    version_str = sample_ep.get("version", "دوبله فارسی" if "دوبله" in q_key else "زیرنویس فارسی")
+                    is_dub = sample_ep.get("is_dub", "دوبله" in version_str)
+                    type_icon = "🎙" if is_dub else "📝"
+
                     item_page = (len(items) // PAGE_SIZE) + 1
                     season_id = F2MLinkStore.save_link({
                         "title": title,
                         "movie_url": movie_url,
                         "season_name": s_name,
                         "quality": q_tag,
+                        "version": version_str,
+                        "is_dub": is_dub,
                         "episodes": ep_list,
                         "page": item_page,
                     })
                     items.append({
-                        "text": f"📁 {s_name} ({q_tag}) - {len(ep_list)} قسمت",
+                        "text": f"📁 {s_name} ({q_tag} | {type_icon} {version_str}) - {len(ep_list)} قسمت",
                         "callback_data": f"f2m_season:{season_id}",
                     })
 
@@ -649,19 +667,21 @@ async def handle_movie_download_click(callback: CallbackQuery):
     url = item.get("url", "")
 
     enc_text = f" {encoder}" if encoder else ""
+    is_dub = "دوبله" in type_str
+    type_icon = "🎙" if is_dub else "📝"
     msg_text = (
         f"📥 <b>لینک دانلود مستقیم:</b>\n\n"
         f"🎬 <b>{html.escape(title)}</b>\n"
+        f"▫️ <b>نوع محتوا:</b> {type_icon} <b>{html.escape(type_str)}</b>\n"
         f"▫️ <b>کیفیت:</b> <code>{html.escape(quality)}{html.escape(enc_text)}</code>\n"
-        f"▫️ <b>نسخه:</b> {html.escape(type_str)}\n"
-        f"▫️ <b>حجم:</b> <code>{html.escape(size_str)}</code>\n"
+        f"▫️ <b>حجم فایل:</b> <code>{html.escape(size_str)}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 <b>لینک مستقیم (جهت کپی در دانلود منیجر):</b>\n"
+        f"🔗 <b>لینک مستقیم ({type_icon} {html.escape(type_str)}):</b>\n"
         f"<code>{url}</code>\n\n"
         f"💡 <i>روی دکمه زیر کلیک کنید تا دانلود مستقیماً در دانلود منیجر شما آغاز شود:</i>"
     )
 
-    btn_label = f"⬇️ شروع دانلود مستقیم ({size_str})" if item.get("size") else "⬇️ شروع دانلود مستقیم"
+    btn_label = f"⬇️ شروع دانلود ({type_icon} {type_str} | {size_str})" if item.get("size") else f"⬇️ شروع دانلود ({type_icon} {type_str})"
     nav_buttons = [
         [
             InlineKeyboardButton(text=btn_label, url=url),
@@ -701,14 +721,14 @@ async def handle_movie_all_links(callback: CallbackQuery):
 
     lines = [
         f"🎬 <b>تمام لینک‌های دانلود مستقیم برای {html.escape(title)}:</b>\n",
-        "💡 <i>می‌توانید هر یک از لینک‌های زیر را مستقیماً در دانلود منیجر (ADM یا IDM) کپی کنید:</i>\n",
+        "💡 <i>نوع هر نسخه (🎙 دوبله فارسی یا 📝 زیرنویس فارسی) در کنار کیفیت درج شده است:</i>\n",
     ]
 
     for d in downloads:
         size_str = f" ({d['size']})" if d.get("size") else ""
-        type_icon = "🎧" if "دوبله" in d.get("type", "") else "📝"
+        type_icon = "🎙" if "دوبله" in d.get("type", "") else "📝"
         lines.append(
-            f"{type_icon} <b>{html.escape(d['quality'])} - {html.escape(d['type'])}{size_str}:</b>\n"
+            f"{type_icon} <b>کیفیت {html.escape(d['quality'])} 【{html.escape(d['type'])}】{size_str}:</b>\n"
             f"<code>{d['url']}</code>\n"
         )
 
@@ -747,17 +767,22 @@ async def handle_series_season(callback: CallbackQuery):
     title = item.get("title", "سریال")
     s_name = item.get("season_name", "فصل")
     q_tag = item.get("quality", "کیفیت اصلی")
+    version_str = item.get("version", "دوبله فارسی" if item.get("is_dub") else "زیرنویس فارسی")
+    is_dub = item.get("is_dub", "دوبله" in version_str)
+    type_icon = "🎙" if is_dub else "📝"
     episodes = item.get("episodes", [])
 
     lines = [
         f"📺 <b>{html.escape(title)}</b>\n"
-        f"📁 <b>{html.escape(s_name)} - کیفیت {html.escape(q_tag)} ({len(episodes)} قسمت):</b>\n\n"
+        f"📁 <b>{html.escape(s_name)} - کیفیت {html.escape(q_tag)} ({type_icon} {html.escape(version_str)}) - {len(episodes)} قسمت:</b>\n\n"
+        f"▫️ <b>نوع محتوا:</b> {type_icon} <b>{html.escape(version_str)}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         "🔗 <b>لینک‌های مستقیم قسمت‌ها (جهت کپی در دانلود منیجر):</b>\n",
     ]
 
     for ep in episodes:
         lines.append(
-            f"🔹 <b>قسمت {ep['episode']}:</b>\n"
+            f"🔹 <b>قسمت {ep['episode']} ({type_icon} {html.escape(version_str)}):</b>\n"
             f"<code>{ep['url']}</code>\n"
         )
 

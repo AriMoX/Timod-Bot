@@ -385,13 +385,20 @@ async def get_movie_details(url: str, search_poster: Optional[str] = None) -> Op
                     elif "2160p" in m_url or "4k" in m_url.lower():
                         q_tag = "4K"
 
-                    if q_tag not in series_seasons[s_key]:
-                        series_seasons[s_key][q_tag] = []
+                    is_dub = bool(re.search(r'(?:[._/-]dub(?:bed)?|/dub/|دوبله)', m_url, re.IGNORECASE))
+                    version_str = "دوبله فارسی" if is_dub else "زیرنویس فارسی"
+                    q_key = f"{q_tag} - {version_str}"
 
-                    series_seasons[s_key][q_tag].append({
+                    if q_key not in series_seasons[s_key]:
+                        series_seasons[s_key][q_key] = []
+
+                    series_seasons[s_key][q_key].append({
                         "episode": e_num,
                         "url": m_url,
                         "size": None,
+                        "quality": q_tag,
+                        "version": version_str,
+                        "is_dub": is_dub,
                     })
 
             # Sort episodes numerically within each season and quality
