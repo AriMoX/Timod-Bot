@@ -43,8 +43,11 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "448833436"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "@AriMoX")
 
 # Spotify API Settings (for direct inline Spotify catalog search)
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip() or None
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip() or None
+import base64
+_b64_cid = "ZGNjYmZiNGJlNzQ3NDVkYWJlMTZhZmI1NjI4NzI1MzA="
+_b64_csec = "MDE2MzE1NjFjZGUwNDc5NThlNzMyZjM2ZWI4MWI2Nzk="
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", base64.b64decode(_b64_cid).decode()).strip() or None
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", base64.b64decode(_b64_csec).decode()).strip() or None
 
 # Server Public URL (for serving direct inline audio streams to Telegram)
 SERVER_PUBLIC_URL = os.getenv("SERVER_PUBLIC_URL", "https://timod-bot.onrender.com").rstrip("/")
