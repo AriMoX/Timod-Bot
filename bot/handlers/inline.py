@@ -160,10 +160,13 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult):
     # Background task to fetch real audio and replace the dummy
     async def process_and_edit():
         try:
-            from bot.services.spotify import get_spotify_track_metadata
-            meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
-            if not meta or not meta.title:
-                meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
+            from bot.services.spotify import get_spotify_track_metadata, get_cached_track_meta, SpotifyTrackMetadata
+            meta = get_cached_track_meta(track_id)
+            if not meta or not meta.title or meta.title == "Spotify Track":
+                meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
+            
+            if not meta or not meta.title or meta.title == "Spotify Track":
+                raise ValueError("Could not retrieve track metadata from Spotify.")
 
             spot_track = await download_spotify_track_meta(meta)
             
