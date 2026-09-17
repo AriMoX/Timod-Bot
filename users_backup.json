@@ -1,0 +1,30 @@
+{
+  "app": "Timod Downloader Bot (@Timod27_Bot)",
+  "exported_at_utc": "2026-09-17 13:30:28",
+  "exported_at_shamsi": "26 شهریور 1405 - ساعت 17:00:28 (تهران)",
+  "total_users": 2,
+  "users": [
+    {
+      "user_id": 8126127833,
+      "username": "Aria_Moghaddam",
+      "first_name": "Aria",
+      "last_name": "Moghaddam",
+      "full_name": "Aria Moghaddam",
+      "first_seen": "2026-09-05 03:04:03",
+      "first_seen_shamsi": "14 شهریور 1405 - ساعت 06:34:03 (تهران)",
+      "last_seen": "2026-09-17 17:00:15",
+      "last_seen_shamsi": "26 شهریور 1405 - ساعت 20:30:15 (تهران)"
+    },
+    {
+      "user_id": 448833436,
+      "username": "AriMoX",
+      "first_name": "Aria",
+      "last_name": null,
+      "full_name": "Aria",
+      "first_seen": "2026-09-05 03:04:03",
+      "first_seen_shamsi": "14 شهریور 1405 - ساعت 06:34:03 (تهران)",
+      "last_seen": "2026-09-17 17:00:15",
+      "last_seen_shamsi": "26 شهریور 1405 - ساعت 20:30:15 (تهران)"
+    }
+  ]
+}

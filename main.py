@@ -437,6 +437,32 @@ async def start_healthcheck_server():
             "sent_chunks": sent_messages,
         })
 
+    async def handle_api_backup(request):
+        from bot.services.user_storage import dump_users_json_data
+        return web.json_response(dump_users_json_data())
+
+    async def handle_api_backup_now(request):
+        from bot.services.user_storage import send_telegram_backup
+        from bot.config import ADMIN_ID
+        if not _global_bot:
+            return web.json_response({"ok": False, "error": "Bot instance not initialized yet"})
+        success = await send_telegram_backup(_global_bot, ADMIN_ID)
+        return web.json_response({"ok": success, "msg": "Backup sent to Telegram admin" if success else "Failed to send backup"})
+
+    async def handle_api_restore(request):
+        from bot.services.user_storage import restore_users_from_json
+        try:
+            body = await request.json()
+            before, after, imported = restore_users_from_json(body, sync_after=True)
+            return web.json_response({
+                "ok": True,
+                "users_before": before,
+                "users_after": after,
+                "imported_or_updated": imported,
+            })
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)})
+
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
     app.router.add_get("/version", handle_version)
@@ -451,6 +477,9 @@ async def start_healthcheck_server():
     app.router.add_get("/clear-cache", handle_clear_cache)
     app.router.add_get("/api/users-list", handle_api_users_list)
     app.router.add_get("/api/send-users-report", handle_send_users_report)
+    app.router.add_get("/api/backup", handle_api_backup)
+    app.router.add_get("/api/backup-now", handle_api_backup_now)
+    app.router.add_post("/api/restore", handle_api_restore)
     app.router.add_route("*", "/audio/{filename}", handle_serve_audio)
 
     runner = web.AppRunner(app)
@@ -554,6 +583,10 @@ async def main():
 
     # Automatically send the full user list with Shamsi date & Tehran time to admin
     asyncio.create_task(_send_admin_startup_report(bot))
+
+    # Start automated periodic database backup task (every 6 hours to Telegram admin)
+    from bot.services.user_storage import start_periodic_backup_worker
+    asyncio.create_task(start_periodic_backup_worker(bot, interval_hours=6))
 
     try:
         await dp.start_polling(

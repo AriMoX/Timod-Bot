@@ -233,15 +233,117 @@ async def cmd_users_list(message: Message):
         await message.reply_document(doc, caption="📁 فایل متنی کامل مشخصات کاربران ربات (تاریخ شمسی و ساعت تهران)")
 
 
+@router.message(Command("backup"))
+async def cmd_backup(message: Message):
+    """Trigger manual instant database backup (Admin only)."""
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("⛔️ این دستور فقط مخصوص مالک ربات است.")
+        return
+
+    status_msg = await message.reply("⏳ در حال آماده‌سازی و استخراج فایل‌های پشتیبان دیتابیس...")
+    try:
+        from bot.services.user_storage import get_backup_documents
+        db_doc, json_doc, caption = get_backup_documents()
+        await message.reply_document(db_doc, caption=caption, parse_mode="HTML")
+        await message.reply_document(
+            json_doc,
+            caption="📋 <b>فایل JSON حاوی کلیه مشخصات و آمار کاربران</b>\n\n💡 برای بازگردانی در هر زمان، با <code>/restore</code> روی این فایل ریپلای کنید.",
+            parse_mode="HTML",
+        )
+        await status_msg.delete()
+    except Exception as e:
+        logger.exception("Error generating backup: %s", e)
+        await status_msg.edit_text(f"❌ خطا در تولید نسخه پشتیبان: {e}")
+
+
+async def _process_restore_document(message: Message, doc):
+    """Process uploaded or replied .db or .json backup file."""
+    import io
+    import json
+    from bot.services.user_storage import restore_database_from_bytes, restore_users_from_json, get_user_count
+
+    fname = (doc.file_name or "").lower()
+    status_msg = await message.reply("⏳ در حال دانلود و اعتبارسنجی فایل پشتیبان...")
+
+    try:
+        file_obj = await message.bot.get_file(doc.file_id)
+        bio = io.BytesIO()
+        await message.bot.download_file(file_obj.file_path, bio)
+        file_bytes = bio.getvalue()
+
+        if fname.endswith(".db"):
+            success, msg, new_users = restore_database_from_bytes(file_bytes)
+            if success:
+                total = get_user_count()
+                await status_msg.edit_text(
+                    f"✅ <b>دیتابیس با موفقیت بازیابی و ادغام شد!</b>\n\n"
+                    f"👥 <b>تعداد کل کاربران فعلی:</b> {total} نفر\n"
+                    f"➕ <b>کاربران جدید اضافه شده:</b> {new_users} نفر\n"
+                    f"📦 <b>نوع فایل:</b> SQLite (.db)\n\n"
+                    f"🎉 اطلاعات با موفقیت در سیستم پایدار و دائم ثبت گردید.",
+                    parse_mode="HTML",
+                )
+            else:
+                await status_msg.edit_text(f"❌ خطا در بازگردانی دیتابیس: {msg}")
+
+        elif fname.endswith(".json"):
+            try:
+                data = json.loads(file_bytes.decode("utf-8"))
+            except Exception as je:
+                await status_msg.edit_text(f"❌ فایل ارسالی یک JSON معتبر نیست: {je}")
+                return
+
+            before, after, imported = restore_users_from_json(data, sync_after=True)
+            await status_msg.edit_text(
+                f"✅ <b>کاربران از فایل JSON با موفقیت بازیابی و ادغام شدند!</b>\n\n"
+                f"👥 <b>تعداد کاربران قبل از بازیابی:</b> {before} نفر\n"
+                f"👥 <b>تعداد کاربران پس از بازیابی:</b> {after} نفر\n"
+                f"🔄 <b>تعداد رکوردهای پردازش‌شده:</b> {imported} رکورد\n\n"
+                f"🎉 کلیه داده‌ها در دیتابیس و نسخه پشتیبان همگام‌سازی شدند.",
+                parse_mode="HTML",
+            )
+        else:
+            await status_msg.edit_text("❌ فرمت فایل نامعتبر است. فقط فایل‌های <code>.db</code> یا <code>.json</code> قابل بازگردانی هستند.", parse_mode="HTML")
+    except Exception as e:
+        logger.exception("Error processing restore document: %s", e)
+        await status_msg.edit_text(f"❌ خطا در پردازش فایل بازیابی: {e}")
+
+
+@router.message(Command("restore"))
+async def cmd_restore(message: Message):
+    """Handle /restore when replied to a document or file (Admin only)."""
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("⛔️ این دستور فقط مخصوص مالک ربات است.")
+        return
+
+    if not message.reply_to_message or not message.reply_to_message.document:
+        await message.reply(
+            "⚠️ <b>نحوه استفاده از دستور /restore:</b>\n\n"
+            "۱. فایل پشتیبان دیتابیس (با پسوند <code>.db</code> یا <code>.json</code>) را برای ربات ارسال کنید.\n"
+            "۲. سپس روی همان فایل ریپلای کرده و دستور <code>/restore</code> را ارسال نمایید.\n"
+            "یا هنگام ارسال فایل، عبارت <code>/restore</code> را در کپشن بنویسید.",
+            parse_mode="HTML",
+        )
+        return
+
+    doc = message.reply_to_message.document
+    await _process_restore_document(message, doc)
+
+
 @router.message(F.document)
 async def handle_admin_document(message: Message):
-    """Allow Admin to upload cookies.txt directly to the bot."""
+    """Allow Admin to upload cookies.txt or restore database backups directly."""
     if not message.from_user or message.from_user.id != ADMIN_ID:
         return
 
     doc = message.document
     filename = (doc.file_name or "").lower()
     caption = (message.caption or "").lower()
+
+    # If document is a database or json backup, or caption mentions restore/backup
+    if filename.endswith(".db") or (filename.endswith(".json") and ("user" in filename or "backup" in filename or "restore" in caption)):
+        await _process_restore_document(message, doc)
+        return
 
     if "cookie" in filename or "cookie" in caption or filename.endswith(".txt"):
         status_msg = await message.reply("⏳ در حال دریافت و فعال‌سازی فایل کوکی یوتیوب...")
