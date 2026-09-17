@@ -9,13 +9,14 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 
 from bot.config import DOWNLOADS_DIR
+from bot.handlers.video_note import process_video
 
 router = Router()
 
-@router.message(F.photo | F.video | F.animation | F.document)
+@router.message(F.photo | F.video | F.animation | F.document | F.video_note)
 async def handle_media_for_sticker(message: Message):
     # Ignore commands, text, or specific audio/voice types
-    if message.voice or message.audio or message.video_note:
+    if message.voice or message.audio:
         return
         
     if message.document:
@@ -23,10 +24,18 @@ async def handle_media_for_sticker(message: Message):
         if not (mime.startswith("image/") or mime.startswith("video/")):
             return
             
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎨 تبدیل به استیکر", callback_data="make_sticker")]
-    ])
-    await message.reply("✅ فایل شما با موفقیت دریافت شد!\nآیا مایلید این فایل را به یک استیکر تلگرامی تبدیل کنم؟", reply_markup=kb)
+    btns = []
+    
+    if message.photo or message.animation or message.video_note:
+        btns.append([InlineKeyboardButton(text="🎨 تبدیل به استیکر", callback_data="make_sticker")])
+    elif message.video or message.document:
+        btns.append([
+            InlineKeyboardButton(text="🔄 ویدیو مسیج (دایره‌ای)", callback_data="make_video_note"),
+            InlineKeyboardButton(text="🎨 تبدیل به استیکر", callback_data="make_sticker")
+        ])
+        
+    kb = InlineKeyboardMarkup(inline_keyboard=btns)
+    await message.reply("✅ فایل شما دریافت شد! چه عملیاتی انجام دهم؟", reply_markup=kb)
 
 
 @router.callback_query(F.data == "make_sticker")
@@ -49,6 +58,9 @@ async def process_make_sticker(call: CallbackQuery):
             is_video = True
         elif msg.animation:
             file_id = msg.animation.file_id
+            is_video = True
+        elif msg.video_note:
+            file_id = msg.video_note.file_id
             is_video = True
         elif msg.document:
             file_id = msg.document.file_id
@@ -130,3 +142,32 @@ async def process_make_sticker(call: CallbackQuery):
             if p and p.exists():
                 try: p.unlink()
                 except: pass
+
+@router.callback_query(F.data == "make_video_note")
+async def process_make_video_note(call: CallbackQuery):
+    msg = call.message.reply_to_message
+    if not msg:
+        await call.answer("❌ پیام اصلی پیدا نشد!", show_alert=True)
+        return
+        
+    await call.message.delete()
+    
+    if msg.video:
+        file_id = msg.video.file_id
+        file_name = msg.video.file_name or f"{msg.video.file_unique_id}.mp4"
+        duration = msg.video.duration
+    elif msg.document:
+        file_id = msg.document.file_id
+        file_name = msg.document.file_name or f"{msg.document.file_unique_id}.mp4"
+        duration = None
+    else:
+        await call.answer("فایل نامعتبر.", show_alert=True)
+        return
+        
+    await process_video(
+        message=msg,
+        file_id=file_id,
+        file_name=file_name,
+        duration=duration
+    )
+

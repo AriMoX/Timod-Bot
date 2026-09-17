@@ -15,7 +15,7 @@ router = Router(name="video_note_router")
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB Telegram Bot API limit
 
 
-@router.message(F.video)
+# @router.message(F.video)
 async def handle_video_message(message: Message):
     """Handle regular video messages."""
     video = message.video
@@ -34,7 +34,7 @@ async def handle_video_message(message: Message):
     )
 
 
-@router.message(F.document)
+# @router.message(F.document)
 async def handle_document_video(message: Message):
     """Handle videos sent as documents/files."""
     doc = message.document
