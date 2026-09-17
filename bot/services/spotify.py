@@ -69,8 +69,14 @@ def resolve_spotify_url(url: str) -> str:
 
 def _clean_title(title: str) -> str:
     """Removes video/audio tags and feat brackets from song title for cleaner search matching."""
+    # Remove everything after a pipe | or - if it contains Official, Video, Audio
+    if "|" in title and re.search(r"(official|video|audio|visualizer)", title.split("|")[1], re.IGNORECASE):
+        title = title.split("|")[0]
+    if " - " in title and re.search(r"(official|video|audio|visualizer)", title.split(" - ")[1], re.IGNORECASE):
+        title = title.split(" - ")[0]
+        
     cleaned = re.sub(
-        r"\s*[\(\[](?:official|audio|video|lyrics|hd|4k|remastered|explicit)[\)\]]",
+        r"\s*[\(\[](?:official|audio|video|lyrics|hd|4k|remastered|explicit|visualizer|lyric video|music video)[\)\]]",
         "",
         title,
         flags=re.IGNORECASE,
@@ -81,6 +87,7 @@ def _clean_title(title: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     ).strip()
+    cleaned = re.sub(r"\|.*", "", cleaned).strip()
     return cleaned or title
 
 
