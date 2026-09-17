@@ -93,8 +93,9 @@ async def handle_inline_query(inline_query: InlineQuery):
         if len(tracks) > 2:
             asyncio.create_task(get_or_prepare_spotify_mp3(tracks[2]))
 
-    # 4. Construct direct Article Results (avoids timeout)
+    # 4. Construct direct Audio Results using a fast dummy URL to bypass Telegram timeouts
     results = []
+    dummy_audio_url = "https://github.com/anars/blank-audio/raw/master/1-second-of-silence.mp3"
     
     for track in tracks:
         cache_key = f"sp_{track.track_id}"
@@ -110,32 +111,88 @@ async def handle_inline_query(inline_query: InlineQuery):
                 )
             )
         else:
-            # B) Article result with a button that triggers fast download (no timeout!)
-            duration_str = ""
-            if track.duration:
-                m, s = divmod(track.duration, 60)
-                duration_str = f" ({m}:{s:02d})"
-                
+            # B) Dummy Audio result that sends instantly. The ChosenInlineResult handler will replace it!
             results.append(
-                InlineQueryResultArticle(
+                InlineQueryResultAudio(
                     id=cache_key,
-                    title=f"{track.title}{duration_str}",
-                    description=track.artist,
+                    audio_url=dummy_audio_url,
+                    title=f"⏳ در حال آماده‌سازی: {track.title}",
+                    performer=track.artist,
+                    audio_duration=track.duration if track.duration > 0 else None,
                     thumbnail_url=track.cover_url,
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"🎵 <b>{html.escape(track.title)}</b>\n👤 {html.escape(track.artist)}\n\n💡 <i>برای دریافت فایل صوتی روی دکمه زیر کلیک کنید:</i>",
-                        parse_mode="HTML"
-                    ),
-                    reply_markup=InlineKeyboardMarkup(
-                        inline_keyboard=[[InlineKeyboardButton(text="📥 دریافت آهنگ", callback_data=f"sp_{track.track_id}")]]
-                    )
+                    caption="⏳ <i>لطفاً چند لحظه صبر کنید تا فایل اصلی از سرور دریافت و جایگزین شود...</i>",
+                    parse_mode="HTML"
                 )
             )
 
     try:
-        await inline_query.answer(results=results, cache_time=120, is_personal=False)
+        await inline_query.answer(results=results, cache_time=5, is_personal=False)
     except Exception as e:
         logger.exception("Error answering inline query: %s", e)
+
+
+# -------------------------------------------------------------
+# 1.5. Chosen Inline Result Handler (Replaces dummy audio with real audio)
+# -------------------------------------------------------------
+from aiogram.types import ChosenInlineResult, InputMediaAudio
+
+@router.chosen_inline_result(F.result_id.startswith("sp_"))
+async def handle_chosen_inline_result(chosen: ChosenInlineResult):
+    track_id = chosen.result_id.removeprefix("sp_")
+    inline_message_id = chosen.inline_message_id
+    if not inline_message_id:
+        return
+
+    # Background task to fetch real audio and replace the dummy
+    async def process_and_edit():
+        try:
+            from bot.services.spotify import get_spotify_track_metadata
+            meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
+            if not meta or not meta.title:
+                meta = SpotifyTrackMetadata(title="Music Track", artist="Artist", duration=0, cover_url=None, track_id=track_id)
+
+            spot_track = await download_spotify_track_meta(meta)
+            
+            from bot.config import ADMIN_ID
+            # Upload to admin dump to get file_id
+            dump_msg = await chosen.bot.send_audio(
+                chat_id=ADMIN_ID,
+                audio=FSInputFile(spot_track.file_path),
+                thumbnail=FSInputFile(spot_track.thumbnail_path) if spot_track.thumbnail_path and spot_track.thumbnail_path.exists() else None,
+                title=spot_track.title,
+                performer=spot_track.artist,
+                duration=spot_track.duration,
+                disable_notification=True
+            )
+            file_id = dump_msg.audio.file_id
+            
+            # Save to cache
+            save_cached_audio(
+                track_id=chosen.result_id,
+                file_id=file_id,
+                title=spot_track.title,
+                artist=spot_track.artist,
+                duration=spot_track.duration,
+            )
+            safe_remove(spot_track.file_path, spot_track.thumbnail_path)
+
+            # Replace the dummy audio message in the chat!
+            caption = f"🎵 <b>{html.escape(spot_track.title)}</b>\n👤 {html.escape(spot_track.artist)}\n\n🤖 دانلود شده توسط ربات @Timod27_Bot"
+            await chosen.bot.edit_message_media(
+                inline_message_id=inline_message_id,
+                media=InputMediaAudio(media=file_id, caption=caption, parse_mode="HTML")
+            )
+        except Exception as e:
+            logger.exception("Error replacing chosen inline result: %s", e)
+            try:
+                await chosen.bot.edit_message_caption(
+                    inline_message_id=inline_message_id,
+                    caption="❌ متأسفانه در آماده‌سازی این قطعه خطایی رخ داد."
+                )
+            except Exception:
+                pass
+
+    asyncio.create_task(process_and_edit())
 
 
 
