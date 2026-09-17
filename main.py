@@ -14,6 +14,7 @@ from bot.config import BOT_TOKEN, PROXY_URL, REQUIRED_CHANNEL, ADMIN_ID
 from bot.handlers.common import router as common_router
 from bot.handlers.downloader import router as downloader_router
 from bot.handlers.video_note import router as video_note_router
+from bot.handlers.stickers import router as stickers_router
 from bot.handlers.inline import router as inline_router
 from bot.handlers.movies import router as movies_router
 from bot.middlewares.subscription import ChannelSubscriptionMiddleware
@@ -591,6 +592,7 @@ async def main():
     # Register handlers
     dp.include_router(common_router)
     dp.include_router(video_note_router)
+    dp.include_router(stickers_router)
     dp.include_router(downloader_router)
     dp.include_router(movies_router)
     dp.include_router(inline_router)
