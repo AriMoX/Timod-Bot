@@ -281,7 +281,7 @@ async def start_healthcheck_server():
 
             from bot.config import DOWNLOADS_DIR
             file_path = DOWNLOADS_DIR / filename
-            if file_path.exists() and file_path.stat().st_size > 500000:
+            if file_path.exists() and (file_path.stat().st_size > 500000 or filename == "sp_pending.mp3"):
                 elapsed = round(time.time() - t_start, 3)
                 logger.info("Serving cached 320k audio from disk in %ss: %s (%s bytes)", elapsed, filename, file_path.stat().st_size)
                 req_entry["status"] = f"200_cached_{elapsed}s"
