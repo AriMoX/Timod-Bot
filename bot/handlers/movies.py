@@ -3,6 +3,8 @@ import html
 import uuid
 import logging
 import asyncio
+from typing import Optional
+
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
