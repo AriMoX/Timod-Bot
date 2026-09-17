@@ -147,6 +147,16 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult):
     if not inline_message_id:
         return
 
+    # Immediately edit caption to prove the bot received the event
+    try:
+        await chosen.bot.edit_message_caption(
+            inline_message_id=inline_message_id,
+            caption="⏳ <i>ارتباط با سرور برقرار شد، در حال دانلود...</i>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.warning("Could not do initial edit for chosen result: %s", e)
+
     # Background task to fetch real audio and replace the dummy
     async def process_and_edit():
         try:
