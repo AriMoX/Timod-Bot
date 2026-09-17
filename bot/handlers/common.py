@@ -372,6 +372,9 @@ async def handle_admin_document(message: Message):
         except Exception as e:
             logger.exception("Failed to process uploaded cookie file")
             await status_msg.edit_text(f"❌ خطا در پردازش فایل کوکی: {e}")
+            
+    from aiogram.dispatcher.event.bases import SkipHandler
+    raise SkipHandler()
 
 
 
