@@ -113,6 +113,7 @@ async def handle_inline_query(inline_query: InlineQuery):
             )
         else:
             # B) Dummy Audio result that sends instantly. The ChosenInlineResult handler will replace it!
+            # IMPORTANT: We MUST attach a reply_markup so Telegram sends inline_message_id in ChosenInlineResult!
             results.append(
                 InlineQueryResultAudio(
                     id=cache_key,
@@ -121,7 +122,10 @@ async def handle_inline_query(inline_query: InlineQuery):
                     performer=track.artist,
                     audio_duration=track.duration if track.duration > 0 else None,
                     caption="⏳ <i>لطفاً چند لحظه صبر کنید تا فایل اصلی از سرور دریافت و جایگزین شود...</i>",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="⏳ در حال دانلود از سرور...", callback_data="noop")
+                    ]])
                 )
             )
 
