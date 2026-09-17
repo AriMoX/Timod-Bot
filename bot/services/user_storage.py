@@ -37,8 +37,9 @@ def save_or_update_user(
     username: str | None,
     first_name: str | None,
     last_name: str | None,
-):
-    """Insert or update a user record with timestamp."""
+) -> bool:
+    """Insert or update a user record with timestamp. Returns True if brand new user."""
+    is_new = False
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn = sqlite3.connect(DB_PATH)
@@ -58,6 +59,7 @@ def save_or_update_user(
                 (username, first_name, last_name, now_str, user_id),
             )
         else:
+            is_new = True
             cursor.execute(
                 """
                 INSERT INTO users (user_id, username, first_name, last_name, first_seen, last_seen)
@@ -70,6 +72,7 @@ def save_or_update_user(
         conn.close()
     except Exception as e:
         logger.exception("Error saving user %s to database: %s", user_id, e)
+    return is_new
 
 
 def to_shamsi_tehran(ts_str: str | None, assume_utc: bool = True) -> str:

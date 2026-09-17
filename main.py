@@ -529,9 +529,10 @@ async def main():
 
     dp = Dispatcher()
 
-    # Enforce channel subscription (@Timod27)
+    # Enforce channel subscription (@Timod27) and track all users (messages, callbacks, inline searches)
     dp.message.outer_middleware(ChannelSubscriptionMiddleware())
     dp.callback_query.outer_middleware(ChannelSubscriptionMiddleware())
+    dp.inline_query.outer_middleware(ChannelSubscriptionMiddleware())
 
     # Register handlers
     dp.include_router(common_router)

@@ -22,14 +22,33 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        # Track user in database
+        # Track user in database and notify admin if new
         if hasattr(event, "from_user") and event.from_user:
-            save_or_update_user(
-                user_id=event.from_user.id,
-                username=event.from_user.username,
-                first_name=event.from_user.first_name,
-                last_name=event.from_user.last_name,
+            u = event.from_user
+            is_new = save_or_update_user(
+                user_id=u.id,
+                username=u.username,
+                first_name=u.first_name,
+                last_name=u.last_name,
             )
+            from bot.config import ADMIN_ID
+            if is_new and u.id != ADMIN_ID:
+                bot = data.get("bot")
+                if bot:
+                    import asyncio
+                    from bot.services.user_storage import to_shamsi_tehran
+                    from datetime import datetime
+                    now_s = to_shamsi_tehran(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    name = f"{u.first_name or ''} {u.last_name or ''}".strip() or "بدون نام"
+                    uname = f"@{u.username}" if u.username else "ندارد"
+                    alert_text = (
+                        f"🔔 <b>کاربر جدید به ربات پیوست!</b>\n\n"
+                        f"👤 <b>نام:</b> {name}\n"
+                        f"🆔 <b>آیدی عددی:</b> <code>{u.id}</code>\n"
+                        f"🌐 <b>یوزرنیم:</b> {uname}\n"
+                        f"📅 <b>زمان:</b> {now_s}"
+                    )
+                    asyncio.create_task(bot.send_message(chat_id=ADMIN_ID, text=alert_text, parse_mode="HTML"))
 
         # 1. Handle incoming Message
         if isinstance(event, Message):
