@@ -8,6 +8,7 @@ import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import DOWNLOADS_DIR, ADMIN_ID
+from bot.keyboards import MAIN_MENU_KEYBOARD
 from bot.services.cache import get_cached_audio, save_cached_audio
 from bot.services.channel_sub import is_user_subscribed
 from bot.services.user_storage import get_all_users
@@ -156,12 +157,13 @@ async def cmd_start_deep_link(message: Message, command: CommandObject):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer(START_TEXT, parse_mode="Markdown")
+    await message.answer(START_TEXT, reply_markup=MAIN_MENU_KEYBOARD, parse_mode="Markdown")
 
 
+@router.message(F.text == "📖 راهنمای استفاده")
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.answer(HELP_TEXT, parse_mode="Markdown")
+    await message.answer(HELP_TEXT, reply_markup=MAIN_MENU_KEYBOARD, parse_mode="Markdown")
 
 
 @router.message(Command("setinline"))
