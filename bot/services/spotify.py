@@ -67,9 +67,20 @@ def resolve_spotify_url(url: str) -> str:
     return url
 
 
-def _clean_title(title: str) -> str:
-    """Removes video/audio tags and feat brackets from song title for cleaner search matching."""
-    # Remove everything after a pipe | or - if it contains Official, Video, Audio
+def _clean_title_and_extract_features(title: str, artist: str) -> tuple[str, str]:
+    """Removes tags from title, extracts feat artists and appends them to the artist string."""
+    feat_match = re.search(r'[\(\[](?:feat|ft|featuring)\.?\s+([^)\]]+)[\)\]]', title, re.IGNORECASE)
+    if feat_match:
+        feat_artist = feat_match.group(1).strip()
+        if feat_artist.lower() not in artist.lower():
+            artist = f"{artist} & {feat_artist}"
+            
+    feat_match2 = re.search(r'\s+(?:feat|ft|featuring)\.?\s+(.+)', title, re.IGNORECASE)
+    if feat_match2 and not feat_match:
+        feat_artist = feat_match2.group(1).strip()
+        if feat_artist.lower() not in artist.lower():
+            artist = f"{artist} & {feat_artist}"
+
     if "|" in title and re.search(r"(official|video|audio|visualizer)", title.split("|")[1], re.IGNORECASE):
         title = title.split("|")[0]
     if " - " in title and re.search(r"(official|video|audio|visualizer)", title.split(" - ")[1], re.IGNORECASE):
@@ -81,19 +92,16 @@ def _clean_title(title: str) -> str:
         title,
         flags=re.IGNORECASE,
     ).strip()
-    cleaned = re.sub(
-        r"\s*[\(\[](?:feat|ft)\.?\s+[^)\]]+[\)\]]",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    ).strip()
+    cleaned = re.sub(r"\s*[\(\[](?:feat|ft|featuring)\.?\s+[^)\]]+[\)\]]", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+(?:feat|ft|featuring)\.?\s+.*", "", cleaned, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r"\|.*", "", cleaned).strip()
-    return cleaned or title
+    
+    return cleaned or title, artist
 
 
 def _generate_search_queries(artist: str, title: str) -> list[str]:
     """Generates clean, prioritized search queries to maximize match rate on music platforms."""
-    clean_t = _clean_title(title)
+    clean_t = _clean_title_and_extract_features(title, '')[0]
 
     # Extract primary artist (first name before &, comma, feat, ft)
     primary_artist = re.split(r"[,&]|\bfeat\b|\bft\b", artist, flags=re.IGNORECASE)[0].strip()
@@ -341,7 +349,7 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
     if not album or not genre or not release_date or not cover_url:
         try:
             import urllib.parse
-            clean_t = _clean_title(meta.title)
+            clean_t = _clean_title_and_extract_features(meta.title, meta.artist)[0]
             q = f"{meta.artist} {clean_t}".strip()
             url = f"https://api.deezer.com/search?q={urllib.parse.quote(q)}&limit=1"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -381,7 +389,7 @@ def _enrich_track_metadata(meta: SpotifyTrackMetadata) -> SpotifyTrackMetadata:
     if not album or not genre or not release_date or not cover_url:
         try:
             import urllib.parse
-            clean_t = _clean_title(meta.title)
+            clean_t = _clean_title_and_extract_features(meta.title, meta.artist)[0]
             q = f"{meta.artist} {clean_t}".strip()
             url = f"https://itunes.apple.com/search?term={urllib.parse.quote(q)}&entity=song&limit=1"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -813,8 +821,9 @@ def get_cached_track_meta(track_id: str) -> SpotifyTrackMetadata | None:
             req = urllib.request.Request(dz_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                t_name = _clean_title(data.get("title") or "Music Track")
+                raw_title = data.get("title") or "Music Track"
                 a_name = data.get("artist", {}).get("name") or "Artist"
+                t_name, a_name = _clean_title_and_extract_features(raw_title, a_name)
                 dur = data.get("duration") or 0
                 album_obj = data.get("album", {})
                 cover_url = album_obj.get("cover_big") or album_obj.get("cover_medium")
@@ -919,8 +928,9 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                     if not t:
                         continue
                     t_id = t.get("id")
-                    title = _clean_title(t.get("name") or "Unknown")
+                    raw_title = t.get("name") or "Unknown"
                     artists = " & ".join([a["name"] for a in t.get("artists", []) if a.get("name")])
+                    title, artists = _clean_title_and_extract_features(raw_title, artists)
                     dur = int((t.get("duration_ms") or 0) / 1000)
                     imgs = t.get("album", {}).get("images", [])
                     cover = imgs[0].get("url") if imgs else None
@@ -963,8 +973,9 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
                 items = data.get("data", [])
                 items.sort(key=lambda x: x.get("rank") or 0, reverse=True)
                 for item in items:
-                    t_name = _clean_title(item.get("title") or "")
+                    raw_title = item.get("title") or ""
                     a_name = item.get("artist", {}).get("name") or "Artist"
+                    t_name, a_name = _clean_title_and_extract_features(raw_title, a_name)
                     if not t_name:
                         continue
                     album = item.get("album", {})
@@ -996,13 +1007,13 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
             from bot.services.music_search import _search_music_sync
             flat_results = _search_music_sync(clean_q, limit=limit)
             for r in flat_results:
-                clean_t = _clean_title(r.title)
-                dedup_key = (clean_t.lower(), r.artist.lower())
+                clean_t, a_name = _clean_title_and_extract_features(r.title, r.artist)
+                dedup_key = (clean_t.lower(), a_name.lower())
                 if dedup_key not in seen:
                     seen.add(dedup_key)
                     m = SpotifyTrackMetadata(
                         title=clean_t,
-                        artist=r.artist,
+                        artist=a_name,
                         duration=r.duration,
                         cover_url=r.thumbnail,
                         track_id=f"yt_{r.id}",
@@ -1021,8 +1032,9 @@ def _search_spotify_sync(query: str, limit: int = 10) -> list[SpotifyTrackMetada
             with urllib.request.urlopen(it_req, timeout=6) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 for item in data.get("results", []):
-                    t_name = _clean_title(item.get("trackName") or "")
+                    raw_title = item.get("trackName") or ""
                     a_name = item.get("artistName") or "Artist"
+                    t_name, a_name = _clean_title_and_extract_features(raw_title, a_name)
                     if not t_name:
                         continue
                     raw_art = item.get("artworkUrl100") or ""
