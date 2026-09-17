@@ -299,8 +299,13 @@ async def _execute_f2m_search(message: Message, query: str):
 
     try:
         results = await search_f2m(query)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
         if not results:
-            await status_msg.edit_text(
+            await message.reply(
                 f"❌ نتیجه‌ای برای «<b>{html.escape(query)}</b>» در سایت فیلم‌تو‌مدیا یافت نشد.\n\n"
                 "💡 <i>نکته: نام فیلم یا سریال را به فارسی یا انگلیسی با املای دقیق‌تر جستجو کنید.</i>",
                 parse_mode="HTML",
@@ -330,11 +335,15 @@ async def _execute_f2m_search(message: Message, query: str):
             text_lines.append(f"{idx}️⃣ <b>{html.escape(item['title'])}</b>{year_str}{rating_str}")
 
         markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-        await status_msg.edit_text("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
+        await message.reply("\n".join(text_lines), reply_markup=markup, parse_mode="HTML")
 
     except Exception as e:
         logger.exception("Error executing movie search for %s: %s", query, e)
-        await status_msg.edit_text(f"❌ خطا در جستجوی فیلم: {e}")
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await message.reply(f"❌ خطا در جستجوی فیلم: {e}")
 
 
 @router.callback_query(F.data.startswith("f2m_sel:"))
@@ -610,7 +619,11 @@ async def _execute_music_search(message: Message, query: str):
     try:
         tracks = await search_spotify(query, limit=5)
         if not tracks:
-            await status_msg.edit_text(
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            await message.reply(
                 f"❌ موزیکی برای عبارت «<b>{html.escape(query)}</b>» یافت نشد.\n\n"
                 "💡 <i>نکته: نام قطعه یا خواننده را بررسی و مجدداً امتحان کنید.</i>",
                 parse_mode="HTML",
@@ -618,7 +631,6 @@ async def _execute_music_search(message: Message, query: str):
             return
 
         top_track = tracks[0]
-        await status_msg.edit_text(f"⏳ در حال دانلود و آماده‌سازی کیفیت عالی 320k برای <b>{html.escape(top_track.title)}</b>...", parse_mode="HTML")
 
         # Prepare audio file
         audio_path = None
@@ -646,6 +658,11 @@ async def _execute_music_search(message: Message, query: str):
 
             markup = InlineKeyboardMarkup(inline_keyboard=more_buttons) if more_buttons else None
 
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
             await message.reply_audio(
                 audio=FSInputFile(audio_path),
                 title=top_track.title,
@@ -655,13 +672,20 @@ async def _execute_music_search(message: Message, query: str):
                 reply_markup=markup,
                 parse_mode="HTML",
             )
-            await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ متأسفانه در دانلود فایل صوتی این قطعه خطایی رخ داد. لطفاً قطعه دیگری را انتخاب کنید.")
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            await message.reply("❌ متأسفانه در دانلود فایل صوتی این قطعه خطایی رخ داد. لطفاً قطعه دیگری را انتخاب کنید.")
 
     except Exception as e:
         logger.exception("Error in _execute_music_search for %s: %s", query, e)
-        await status_msg.edit_text(f"❌ خطا در جستجوی موزیک: {e}")
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await message.reply(f"❌ خطا در جستجوی موزیک: {e}")
 
 
 @router.callback_query(F.data.startswith("music_dl:"))
