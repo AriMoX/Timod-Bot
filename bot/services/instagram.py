@@ -111,25 +111,27 @@ def resolve_instagram_url(url: str) -> str:
     return url
 
 
+def build_ydl_opts() -> dict:
+    cookie_path = DOWNLOADS_DIR.parent / "cookies.txt"
+    return {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': str(DOWNLOADS_DIR / 'ig_%(id)s.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True,
+        'cookiefile': str(cookie_path) if cookie_path.exists() else None,
+        # Instagram limits
+        'match_filter': lambda info: 'Video is too long' if info.get('duration', 0) > 600 else None,
+    }
+
+
 def _download_instagram_sync(url: str) -> InstagramMedia:
     """Download Instagram video(s), photo(s), or carousel posts via yt-dlp."""
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     clean_url = resolve_instagram_url(url)
 
-    # 1. Base options for yt-dlp
-    ydl_opts = {
-        "ffmpeg_location": ffmpeg_exe,
-        "outtmpl": str(DOWNLOADS_DIR / "ig_%(id)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": False,
-    }
-
-    # Apply Instagram authentication cookies if configured
-    cookie_file = _prepare_cookie_file()
-    if cookie_file:
-        logger.info("Using Instagram cookies file: %s", cookie_file)
-        ydl_opts["cookiefile"] = cookie_file
+    ydl_opts = build_ydl_opts()
+    ydl_opts["ffmpeg_location"] = ffmpeg_exe
+    ydl_opts["noplaylist"] = False
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
