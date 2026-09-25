@@ -651,13 +651,26 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                     c_title_low = c_title.lower()
                     bad_words = ["slowed", "reverb", "sped up", "8d", "bass boosted", "موزیک ویدیو", "video", "اسلو", "ریمیکس", "remix"]
                     if "music.youtube.com" not in cand_url:
+                        # ytsearch fallback
                         if any(bw in c_title_low for bw in bad_words):
                             continue
-                        if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 35):
+                        if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 8):
+                            continue
+                        
+                        t_words = title.lower().split()
+                        match_found = False
+                        for w in t_words:
+                            if len(w) > 2 and w in c_title_low:
+                                match_found = True
+                                break
+                        if not match_found and artist.lower().split()[0] not in c_title_low:
                             continue
                     else:
-                        if c_dur > 0 and (c_dur < 30 or abs(c_dur - meta_duration) > 10):
+                        # ytmusicapi official results
+                        if c_dur > 0 and (c_dur < 30 or abs(c_dur - meta_duration) > 30):
                             continue
+                elif c_dur > 0 and c_dur < 50:
+                    continue
 
                 try:
                     logger.info("Downloading YouTube candidate: %s (%ss) -> %s", c_title, c_dur, cand_url)
