@@ -86,7 +86,7 @@ async def handle_inline_query(inline_query: InlineQuery):
     # 4. Construct direct Audio Results using a fast dummy URL to bypass Telegram timeouts
     results = []
     server_base = SERVER_PUBLIC_URL.rstrip("/")
-    dummy_audio_url = f"{server_base}/audio/dz_pending.mp3"
+    dummy_audio_url = f"{server_base}/audio/sp_pending_v2.mp3"
     
     for track in tracks:
         cache_key = f"dz_{track.track_id}"
