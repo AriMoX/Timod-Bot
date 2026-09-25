@@ -22,7 +22,7 @@ import yt_dlp
 
 from bot.config import DOWNLOADS_DIR, SERVER_PUBLIC_URL
 from bot.services.deezer import search_deezer, DeezerTrack
-from bot.services.spotify import download_spotify_track_meta, DeezerTrackMetadata
+from bot.services.spotify import download_spotify_track_meta, SpotifyTrackMetadata
 from bot.services.cache import get_cached_audio, save_cached_audio
 from bot.utils.cleanup import safe_remove
 
