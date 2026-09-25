@@ -581,93 +581,102 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
         except Exception as sc_err:
             all_errors.append(f"SC query '{q}': {sc_err}")
 
-    # Fallback: YouTube Search for full track if SoundCloud yielded no match
-    if not raw_file_path or not raw_file_path.exists():
-        from bot.config import YOUTUBE_COOKIES_PATH
-        yt_search_opts = {
-            "extract_flat": True,
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "socket_timeout": 6,
-            "cookiefile": str(YOUTUBE_COOKIES_PATH) if YOUTUBE_COOKIES_PATH.exists() else None,
-            "js_runtimes": {"node": {}},
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["visionos", "android", "web"]
-                }
-            },
-        }
-        yt_cand_opts = {
-            "format": "bestaudio/best",
-            "ffmpeg_location": ffmpeg_exe,
-            "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_yt_%(id)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "socket_timeout": 8,
-            "retries": 1,
-            "cookiefile": str(YOUTUBE_COOKIES_PATH) if YOUTUBE_COOKIES_PATH.exists() else None,
-            "js_runtimes": {"node": {}},
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["visionos", "android", "web"]
-                }
-            },
-        }
-        for q in queries[:2]:
-            yt_query = f"ytsearch10:{q}"
-            logger.info("Searching YouTube fallback for full audio: %s", yt_query)
+        # Fallback: YouTube Search for full track if SoundCloud yielded no match
+        if not raw_file_path or not raw_file_path.exists():
+            from bot.config import YOUTUBE_COOKIES_PATH
+            yt_cand_opts = {
+                "format": "bestaudio/best",
+                "ffmpeg_location": ffmpeg_exe,
+                "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_yt_%(id)s.%(ext)s"),
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "socket_timeout": 8,
+                "retries": 1,
+                "cookiefile": str(YOUTUBE_COOKIES_PATH) if YOUTUBE_COOKIES_PATH.exists() else None,
+                "js_runtimes": {"node": {}},
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android", "web"]
+                    }
+                },
+            }
+            
             try:
-                with yt_dlp.YoutubeDL(yt_search_opts) as yt_ydl:
-                    yt_info = yt_ydl.extract_info(yt_query, download=False)
-                    candidates = yt_info.get("entries") or [yt_info]
-                    for entry in candidates:
-                        if not entry:
+                from ytmusicapi import YTMusic
+                ytmusic = YTMusic()
+                ytm_query = f"{artist} {title}"
+                logger.info("Searching YTMusicAPI for: %s", ytm_query)
+                ytm_results = ytmusic.search(ytm_query, filter="songs")
+                
+                candidates = []
+                for r in ytm_results[:5]:
+                    if r.get("videoId"):
+                        dur_str = r.get("duration", "0:0")
+                        dur_parts = dur_str.split(':')
+                        dur_sec = 0
+                        if len(dur_parts) == 2:
+                            dur_sec = int(dur_parts[0])*60 + int(dur_parts[1])
+                        elif len(dur_parts) == 3:
+                            dur_sec = int(dur_parts[0])*3600 + int(dur_parts[1])*60 + int(dur_parts[2])
+                            
+                        candidates.append({
+                            "url": f"https://music.youtube.com/watch?v={r['videoId']}",
+                            "title": r.get("title", ""),
+                            "duration": dur_sec,
+                            "id": r["videoId"]
+                        })
+            except Exception as e:
+                logger.warning("YTMusicAPI failed, falling back to yt-dlp search: %s", e)
+                yt_search_opts = dict(yt_cand_opts)
+                yt_search_opts["extract_flat"] = True
+                candidates = []
+                for q in queries[:1]:
+                    try:
+                        with yt_dlp.YoutubeDL(yt_search_opts) as yt_ydl:
+                            yt_info = yt_ydl.extract_info(f"ytsearch5:{q}", download=False)
+                            candidates.extend(yt_info.get("entries", []))
+                    except Exception:
+                        pass
+
+            for entry in candidates:
+                if not entry:
+                    continue
+                cand_url = entry.get("webpage_url") or entry.get("url")
+                c_title = entry.get("title") or ""
+                c_dur = entry.get("duration") or 0
+                c_id = entry.get("id")
+                
+                if meta_duration > 40:
+                    c_title_low = c_title.lower()
+                    bad_words = ["slowed", "reverb", "sped up", "8d", "bass boosted", "موزیک ویدیو", "video", "اسلو", "ریمیکس", "remix"]
+                    if "music.youtube.com" not in cand_url:
+                        if any(bw in c_title_low for bw in bad_words):
                             continue
-                        cand_url = entry.get("webpage_url") or entry.get("url")
-                        c_title = entry.get("title") or ""
-                        c_dur = entry.get("duration") or 0
-                        c_id = entry.get("id")
-                        if meta_duration > 40:
-                            c_title_low = c_title.lower()
-                            bad_words = ["slowed", "reverb", "sped up", "8d", "bass boosted", "موزیک ویدیو", "video", "اسلو", "ریمیکس", "remix"]
-                            if any(bw in c_title_low for bw in bad_words):
-                                continue
-                                
-                            if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 6):
-                                continue
-                                
-                            t_words = title.lower().split()
-                            match_found = False
-                            for w in t_words:
-                                if len(w) > 2 and w in c_title_low:
-                                    match_found = True
-                                    break
-                            if not match_found and artist.lower().split()[0] not in c_title_low:
-                                continue
-                        elif c_dur > 0 and c_dur < 50:
+                        if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 35):
                             continue
-                        try:
-                            logger.info("Downloading YouTube candidate: %s (%ss) -> %s", c_title, c_dur, cand_url)
-                            with yt_dlp.YoutubeDL(yt_cand_opts) as yt_dl:
-                                c_info = yt_dl.extract_info(cand_url, download=True)
-                            matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_yt_{c_id}.*"))
-                            if matches and matches[0].exists() and matches[0].stat().st_size > 500000:
-                                raw_file_path = matches[0]
-                                actual_duration = int(c_dur or (c_info.get("duration") if c_info else 0) or meta_duration or 0)
-                                logger.info("Successfully fetched full track from YouTube: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
-                                break
-                        except Exception as cand_err:
-                            all_errors.append(f"YT Candidate {c_id}: {cand_err}")
+                    else:
+                        if c_dur > 0 and (c_dur < 30 or abs(c_dur - meta_duration) > 10):
                             continue
 
-                if raw_file_path and raw_file_path.exists():
-                    break
-            except Exception as yt_err:
-                all_errors.append(f"YT query '{q}': {yt_err}")
+                try:
+                    logger.info("Downloading YouTube candidate: %s (%ss) -> %s", c_title, c_dur, cand_url)
+                    with yt_dlp.YoutubeDL(yt_cand_opts) as yt_dl:
+                        c_info = yt_dl.extract_info(cand_url, download=True)
+                        matches = list(DOWNLOADS_DIR.glob(f"raw_spot_{track_id}_yt_{c_id}.*"))
+                        if matches and matches[0].exists() and matches[0].stat().st_size > 500000:
+                            raw_file_path = matches[0]
+                            actual_duration = int(c_dur or (c_info.get("duration") if c_info else 0) or meta_duration or 0)
+                            logger.info("Successfully fetched full YouTube track: %s (%s bytes)", raw_file_path.name, raw_file_path.stat().st_size)
+                            break
+                except Exception as cand_err:
+                    all_errors.append(f"YT Candidate {c_id}: {cand_err}")
+                    continue
+                    
+            if not raw_file_path or not raw_file_path.exists():
+                        all_errors.append("All YouTube and YTMusicAPI candidates failed.")
 
-    # Step 2: Master High-Fidelity 320kbps Encoding with HD Cover Art embedding (ID3v2.3)
+        # Step 2: Master High-Fidelity 320kbps Encoding with HD Cover Art embedding (ID3v2.3)
     final_audio_path = DOWNLOADS_DIR / f"spot_{track_id}.mp3"
     sp_ready_path = DOWNLOADS_DIR / f"sp_{track_id}.mp3"
 
