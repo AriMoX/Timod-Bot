@@ -102,26 +102,14 @@ def _clean_title_and_extract_features(title: str, artist: str) -> tuple[str, str
 def _generate_search_queries(artist: str, title: str) -> list[str]:
     """Generates clean, prioritized search queries to maximize match rate on music platforms."""
     clean_t = _clean_title_and_extract_features(title, '')[0]
-
-    # Extract primary artist (first name before &, comma, feat, ft)
     primary_artist = re.split(r"[,&]|\bfeat\b|\bft\b", artist, flags=re.IGNORECASE)[0].strip()
 
-    # Clean all artists (replace & and comma with space)
-    clean_all_artists = re.sub(r"[,&]|\bfeat\b|\bft\b", " ", artist).strip()
-    clean_all_artists = re.sub(r"\s+", " ", clean_all_artists)
-
     queries = []
-    # 1. Primary artist + clean title (Highest accuracy on SoundCloud / YouTube)
     if primary_artist:
+        queries.append(f"{primary_artist} {clean_t} Audio")
         queries.append(f"{primary_artist} {clean_t}")
-        queries.append(f"{clean_t} {primary_artist}")
-
-    # 2. All artists + clean title
-    if clean_all_artists and clean_all_artists.lower() != primary_artist.lower():
-        queries.append(f"{clean_all_artists} {clean_t}")
-
-    # 3. Clean title alone
-    if clean_t:
+    else:
+        queries.append(f"{clean_t} Audio")
         queries.append(clean_t)
 
     # Deduplicate while preserving order
