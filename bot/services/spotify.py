@@ -543,8 +543,21 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                         logger.info("Skipping DRM Go+ track: %s", c_title)
                         continue
                     if meta_duration > 40:
-                        if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 50):
-                            logger.info("Skipping candidate with duration mismatch: %ss (expected ~%ss)", c_dur, meta_duration)
+                        c_title_low = c_title.lower()
+                        bad_words = ["slowed", "reverb", "sped up", "8d", "bass boosted", "موزیک ویدیو", "video", "اسلو", "ریمیکس", "remix"]
+                        if any(bw in c_title_low for bw in bad_words):
+                            continue
+                            
+                        if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 6):
+                            continue
+                            
+                        t_words = title.lower().split()
+                        match_found = False
+                        for w in t_words:
+                            if len(w) > 2 and w in c_title_low:
+                                match_found = True
+                                break
+                        if not match_found and artist.lower().split()[0] not in c_title_low:
                             continue
                     elif c_dur > 0 and c_dur < 50:
                         continue
@@ -616,13 +629,25 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
                         c_title = entry.get("title") or ""
                         c_dur = entry.get("duration") or 0
                         c_id = entry.get("id")
-
                         if meta_duration > 40:
-                            if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 55):
+                            c_title_low = c_title.lower()
+                            bad_words = ["slowed", "reverb", "sped up", "8d", "bass boosted", "موزیک ویدیو", "video", "اسلو", "ریمیکس", "remix"]
+                            if any(bw in c_title_low for bw in bad_words):
+                                continue
+                                
+                            if c_dur > 0 and (c_dur < 50 or abs(c_dur - meta_duration) > 6):
+                                continue
+                                
+                            t_words = title.lower().split()
+                            match_found = False
+                            for w in t_words:
+                                if len(w) > 2 and w in c_title_low:
+                                    match_found = True
+                                    break
+                            if not match_found and artist.lower().split()[0] not in c_title_low:
                                 continue
                         elif c_dur > 0 and c_dur < 50:
                             continue
-
                         try:
                             logger.info("Downloading YouTube candidate: %s (%ss) -> %s", c_title, c_dur, cand_url)
                             with yt_dlp.YoutubeDL(yt_cand_opts) as yt_dl:
