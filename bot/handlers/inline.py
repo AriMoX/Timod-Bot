@@ -21,12 +21,8 @@ import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import DOWNLOADS_DIR, SERVER_PUBLIC_URL
-from bot.services.spotify import (
-    search_spotify,
-    get_or_prepare_spotify_mp3,
-    download_spotify_track_meta,
-    SpotifyTrackMetadata,
-)
+from bot.services.deezer import search_deezer, DeezerTrack
+from bot.services.spotify import download_spotify_track_meta, DeezerTrackMetadata
 from bot.services.cache import get_cached_audio, save_cached_audio
 from bot.utils.cleanup import safe_remove
 
@@ -45,17 +41,17 @@ async def handle_inline_query(inline_query: InlineQuery):
     bot_username = me.username or "Timod27_Bot"
     user_id = inline_query.from_user.id
 
-    logger.info("Spotify inline search by user %s: '%s'", user_id, query)
+    logger.info("Deezer inline search by user %s: '%s'", user_id, query)
 
     # 1. Empty query prompt
     if not query:
         prompt_item = InlineQueryResultArticle(
             id="prompt",
             title="🔍 نام آهنگ یا خواننده را بنویسید...",
-            description="جستجوی مستقیم از کاتالوگ اسپاتیفای و ارسال فوری موزیک",
+            description="جستجوی مستقیم از کاتالوگ دیزر و ارسال فوری موزیک",
             input_message_content=InputTextMessageContent(
                 message_text=(
-                    "🎵 <b>جستجوی اینلاین موزیک از اسپاتیفای:</b>\n\n"
+                    "🎵 <b>جستجوی اینلاین موزیک از دیزر:</b>\n\n"
                     f"نام آهنگ یا خواننده مورد نظر را بنویسید تا فایل باکیفیت آن درجا ارسال شود:\n"
                     f"<code>@{bot_username} نام آهنگ یا خواننده</code>"
                 ),
@@ -65,20 +61,20 @@ async def handle_inline_query(inline_query: InlineQuery):
         await inline_query.answer(results=[prompt_item], cache_time=1, is_personal=True)
         return
 
-    # 2. Direct Spotify Catalog Search
+    # 2. Direct Deezer Catalog Search
     try:
-        tracks = await search_spotify(query, limit=10)
+        tracks = await search_deezer(query, limit=10)
     except Exception as e:
-        logger.exception("Error searching Spotify inline: %s", e)
+        logger.exception("Error searching Deezer inline: %s", e)
         tracks = []
 
     if not tracks:
         no_result = InlineQueryResultArticle(
             id="no_result",
-            title="❌ نتیجه‌ای در اسپاتیفای یافت نشد",
+            title="❌ نتیجه‌ای در دیزر یافت نشد",
             description=f"برای عبارت '{query}' آهنگی پیدا نشد.",
             input_message_content=InputTextMessageContent(
-                message_text=f"❌ متأسفانه برای عبارت <b>{html.escape(query)}</b> آهنگی در اسپاتیفای یافت نشد.",
+                message_text=f"❌ متأسفانه برای عبارت <b>{html.escape(query)}</b> آهنگی در دیزر یافت نشد.",
                 parse_mode="HTML",
             ),
         )
@@ -90,10 +86,10 @@ async def handle_inline_query(inline_query: InlineQuery):
     # 4. Construct direct Audio Results using a fast dummy URL to bypass Telegram timeouts
     results = []
     server_base = SERVER_PUBLIC_URL.rstrip("/")
-    dummy_audio_url = f"{server_base}/audio/sp_pending_v2.mp3"
+    dummy_audio_url = f"{server_base}/audio/dz_pending.mp3"
     
     for track in tracks:
-        cache_key = f"sp_{track.track_id}"
+        cache_key = f"dz_{track.track_id}"
         cached = get_cached_audio(cache_key)
 
         # A) Instant Telegram-cached audio (0.1s send)
@@ -136,7 +132,7 @@ from aiogram.types import ChosenInlineResult, InputMediaAudio
 
 @router.chosen_inline_result(F.result_id.startswith("sp_"))
 async def handle_chosen_inline_result(chosen: ChosenInlineResult):
-    track_id = chosen.result_id.removeprefix("sp_")
+    track_id = chosen.result_id.removeprefix("dz_")
     inline_message_id = chosen.inline_message_id
     if not inline_message_id:
         return
@@ -154,13 +150,24 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult):
     # Background task to fetch real audio and replace the dummy
     async def process_and_edit():
         try:
-            from bot.services.spotify import get_spotify_track_metadata, get_cached_track_meta, SpotifyTrackMetadata
-            meta = get_cached_track_meta(track_id)
-            if not meta or not meta.title or meta.title == "Spotify Track":
-                meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
+            from bot.services.spotify import get_cached_track_meta, SpotifyTrackMetadata, download_spotify_track_meta
+            from bot.services.deezer import search_deezer
             
-            if not meta or not meta.title or meta.title == "Spotify Track":
-                raise ValueError("Could not retrieve track metadata from Spotify.")
+            meta = get_cached_track_meta(track_id)
+            if not getattr(meta, "title", None) or meta.title == "Deezer Track":
+                tracks = await search_deezer(track_id, limit=1)
+                if tracks:
+                    dz = tracks[0]
+                    meta = SpotifyTrackMetadata(
+                        track_id=dz.track_id,
+                        title=dz.title,
+                        artist=dz.artist,
+                        album=f"{dz.title} - Single",
+                        duration=dz.duration,
+                        cover_url=dz.cover_url
+                    )
+                else:
+                    raise ValueError("Could not retrieve track metadata from Deezer.")
 
             spot_track = await download_spotify_track_meta(meta)
             
@@ -244,16 +251,17 @@ async def handle_play_callback(callback: CallbackQuery):
         )
         return
 
-    status_msg = await callback.message.answer("⏳ در حال دانلود قطعه از اسپاتیفای با بالاترین کیفیت (320kbps)...")
+    status_msg = await callback.message.answer("⏳ در حال دانلود قطعه از دیزر با بالاترین کیفیت (320kbps)...")
     await callback.bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
 
     try:
-        from bot.services.spotify import get_spotify_track_metadata, get_cached_track_meta, SpotifyTrackMetadata
+        from bot.services.spotify import get_cached_track_meta, SpotifyTrackMetadata
+        from bot.services.deezer import search_deezer
         meta = get_cached_track_meta(track_id)
-        if not meta or not meta.title or meta.title == "Spotify Track":
+        if not meta or not meta.title or meta.title == "Deezer Track":
             meta = await asyncio.to_thread(get_spotify_track_metadata, f"https://open.spotify.com/track/{track_id}")
-        if not meta or not meta.title or meta.title == "Spotify Track":
-            raise ValueError("Could not retrieve track metadata from Spotify.")
+        if not meta or not meta.title or meta.title == "Deezer Track":
+            raise ValueError("Could not retrieve track metadata from Deezer.")
 
         spot_track = await download_spotify_track_meta(meta)
 
@@ -281,5 +289,5 @@ async def handle_play_callback(callback: CallbackQuery):
 
     except Exception as e:
         logger.exception("Error in callback spotify download: %s", e)
-        await status_msg.edit_text("❌ خطا در آماده‌سازی و دانلود این قطعه از اسپاتیفای.")
+        await status_msg.edit_text("❌ خطا در آماده‌سازی و دانلود این قطعه از دیزر.")
 
