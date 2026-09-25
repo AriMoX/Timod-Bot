@@ -600,6 +600,23 @@ async def main():
     # Test bot connection
     me = await bot.get_me()
     print(f"✅ Connected successfully as @{me.username} (ID: {me.id})", flush=True)
+
+    # --- AUTO RESTORE FROM PINNED BACKUP ON STARTUP ---
+    try:
+        from bot.config import ADMIN_ID
+        chat = await bot.get_chat(ADMIN_ID)
+        if chat.pinned_message and chat.pinned_message.document:
+            if chat.pinned_message.document.file_name == 'bot_database.db':
+                logger.info("Found pinned backup in Admin chat. Attempting auto-restore...")
+                file_id = chat.pinned_message.document.file_id
+                from bot.services.user_storage import DB_PATH
+                file_info = await bot.get_file(file_id)
+                await bot.download_file(file_info.file_path, destination=str(DB_PATH))
+                logger.info("✅ Database successfully restored from pinned Telegram backup on startup!")
+    except Exception as e:
+        logger.warning(f"Could not auto-restore database from pinned message: {e}")
+    # --------------------------------------------------
+
     if not me.supports_inline_queries:
         print("⚠️ NOTE: Inline queries are DISABLED in @BotFather. Run /setinline to enable popup search!", flush=True)
     else:

@@ -251,12 +251,16 @@ async def cmd_backup(message: Message):
     try:
         from bot.services.user_storage import get_backup_documents
         db_doc, json_doc, caption = get_backup_documents()
-        await message.reply_document(db_doc, caption=caption, parse_mode="HTML")
+        db_msg = await message.reply_document(db_doc, caption=caption, parse_mode="HTML")
         await message.reply_document(
             json_doc,
             caption="📋 <b>فایل JSON حاوی کلیه مشخصات و آمار کاربران</b>\n\n💡 برای بازگردانی در هر زمان، با <code>/restore</code> روی این فایل ریپلای کنید.",
             parse_mode="HTML",
         )
+        try:
+            await message.bot.pin_chat_message(chat_id=message.chat.id, message_id=db_msg.message_id, disable_notification=True)
+        except Exception:
+            pass
         await status_msg.delete()
     except Exception as e:
         logger.exception("Error generating backup: %s", e)

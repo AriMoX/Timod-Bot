@@ -361,7 +361,7 @@ async def send_telegram_backup(bot: Bot, chat_id: int = ADMIN_ID) -> bool:
     """Send both database files to admin chat as permanent Telegram cloud backup."""
     try:
         db_doc, json_doc, caption = get_backup_documents()
-        await bot.send_document(chat_id=chat_id, document=db_doc, caption=caption, parse_mode="HTML")
+        db_msg = await bot.send_document(chat_id=chat_id, document=db_doc, caption=caption, parse_mode="HTML")
         await asyncio.sleep(0.5)
         await bot.send_document(
             chat_id=chat_id,
@@ -369,7 +369,12 @@ async def send_telegram_backup(bot: Bot, chat_id: int = ADMIN_ID) -> bool:
             caption="📋 <b>فایل JSON ساختاریافته مشخصات کاربران ربات</b>",
             parse_mode="HTML",
         )
-        logger.info("Backup successfully dispatched to Telegram chat %s", chat_id)
+        try:
+            await bot.pin_chat_message(chat_id=chat_id, message_id=db_msg.message_id, disable_notification=True)
+        except Exception as pin_err:
+            logger.warning("Could not pin backup message: %s", pin_err)
+            
+        logger.info("Backup successfully dispatched and pinned to Telegram chat %s", chat_id)
         return True
     except Exception as e:
         logger.exception("Failed to send Telegram backup to %s: %s", chat_id, e)
