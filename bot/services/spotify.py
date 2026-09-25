@@ -603,7 +603,7 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
             },
         }
         for q in queries[:2]:
-            yt_query = f"ytsearch3:{q}"
+            yt_query = f"ytsearch10:{q}"
             logger.info("Searching YouTube fallback for full audio: %s", yt_query)
             try:
                 with yt_dlp.YoutubeDL(yt_search_opts) as yt_ydl:
