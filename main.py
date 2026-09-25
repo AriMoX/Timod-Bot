@@ -590,13 +590,15 @@ async def main():
     dp.inline_query.outer_middleware(ChannelSubscriptionMiddleware())
 
     # Register handlers
+    from bot.handlers.admin_panel import router as admin_panel_router
+    dp.include_router(admin_panel_router)
     dp.include_router(common_router)
     dp.include_router(video_note_router)
     dp.include_router(stickers_router)
     dp.include_router(downloader_router)
     dp.include_router(movies_router)
     dp.include_router(inline_router)
-
+    
     # Test bot connection
     me = await bot.get_me()
     print(f"✅ Connected successfully as @{me.username} (ID: {me.id})", flush=True)

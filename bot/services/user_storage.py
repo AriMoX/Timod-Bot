@@ -71,6 +71,16 @@ def init_user_db():
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY,
+                added_by INTEGER,
+                permissions TEXT,
+                added_date TEXT
+            )
+            """
+        )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen)")
         conn.commit()
         conn.close()
@@ -444,4 +454,62 @@ def format_users_report_chunks(users: list[dict], admin_id: int) -> list[str]:
         chunks.append(current_chunk)
 
     return chunks
+
+
+
+def get_all_admins() -> list[dict]:
+    import sqlite3
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT * FROM admins")
+        return [dict(row) for row in c.fetchall()]
+
+def is_admin(user_id: int) -> bool:
+    from bot.config import ADMIN_ID
+    if user_id == ADMIN_ID: return True
+    import sqlite3
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
+        return bool(c.fetchone())
+
+def get_admin_permissions(user_id: int) -> list[str]:
+    from bot.config import ADMIN_ID
+    if user_id == ADMIN_ID: return ["all"]
+    import sqlite3
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT permissions FROM admins WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        if row and row[0]:
+            import json
+            try:
+                return json.loads(row[0])
+            except:
+                return []
+        return []
+
+def add_or_update_admin(user_id: int, added_by: int, permissions: list[str]):
+    import json
+    import sqlite3
+    from datetime import datetime, timezone
+    perms_json = json.dumps(permissions)
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO admins (user_id, added_by, permissions, added_date)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                permissions=excluded.permissions
+        ''', (user_id, added_by, perms_json, now))
+        conn.commit()
+
+def remove_admin(user_id: int):
+    import sqlite3
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+        conn.commit()
 
