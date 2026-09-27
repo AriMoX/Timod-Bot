@@ -1,8 +1,6 @@
 import asyncio
 import logging
 from pathlib import Path
-import imageio_ffmpeg
-
 from bot.config import DOWNLOADS_DIR
 
 logger = logging.getLogger(__name__)
@@ -17,14 +15,13 @@ async def convert_to_video_note(input_path: Path, output_filename: str | None = 
     - Encodes audio as AAC (if present)
     - Trims to max 60 seconds (Telegram limit)
     """
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     if not output_filename:
         output_filename = f"note_{input_path.stem}.mp4"
     output_path = DOWNLOADS_DIR / output_filename
 
     # FFmpeg command arguments
     cmd = [
-        ffmpeg_exe,
+        "ffmpeg",
         "-y",
         "-i", str(input_path),
         "-t", "60",
