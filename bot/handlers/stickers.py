@@ -139,7 +139,7 @@ async def do_make_sticker(message: Message, bot, data: dict, emoji: str):
             
         else:
             # --- CONVERT VIDEO TO WEBM VP9 ---
-        ffmpeg_exe = 'ffmpeg'
+            ffmpeg_exe = 'ffmpeg'
             cmd = [
                 ffmpeg_exe, "-y",
                 "-i", str(in_path),
