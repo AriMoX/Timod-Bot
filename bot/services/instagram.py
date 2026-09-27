@@ -166,6 +166,25 @@ def _download_instagram_sync(url: str) -> InstagramMedia:
                     v_opts["outtmpl"] = str(DOWNLOADS_DIR / f"ig_{entry_id}.%(ext)s")
 
                     with yt_dlp.YoutubeDL(v_opts) as v_ydl:
+                        # Force yt-dlp to use H.264 video and merge it with DASH audio
+                        if "formats" in entry:
+                            new_formats = []
+                            for f in entry["formats"]:
+                                fid = str(f.get("format_id", ""))
+                                vcodec = str(f.get("vcodec", "")).lower()
+                                
+                                # Skip DASH VP9/AV1 videos entirely so they can't be selected
+                                if fid.startswith("dash-") and vcodec.startswith(("vp", "av01")):
+                                    continue
+                                    
+                                # If it's a legacy pre-merged format (usually H.264), tell yt-dlp it's video-only
+                                if not fid.startswith("dash-"):
+                                    f["acodec"] = "none"
+                                    f["vcodec"] = "h264"
+                                
+                                new_formats.append(f)
+                            entry["formats"] = new_formats
+                                    
                         v_info = v_ydl.process_ie_result(entry, download=True)
                         v_filename = v_ydl.prepare_filename(v_info)
                         v_path = Path(v_filename)
