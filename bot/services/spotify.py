@@ -6,7 +6,6 @@ import subprocess
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import DOWNLOADS_DIR
@@ -451,8 +450,6 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
     meta_duration = meta.duration
     cover_url = meta.cover_url or fallback_cover
     track_id = meta.track_id
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-
     year_match = re.search(r"\b(19\d\d|20\d\d)\b", str(release_date))
     year_val = year_match.group(1) if year_match else "2024"
 
@@ -485,7 +482,6 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
     # Base yt-dlp configuration (prefer fast audio stream 140/m4a)
     base_opts = {
         "format": "140/bestaudio[ext=m4a]/bestaudio/best",
-        "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
@@ -513,7 +509,6 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
 
     cand_dl_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
@@ -586,7 +581,6 @@ def _download_spotify_track_meta_sync(meta: SpotifyTrackMetadata, fallback_cover
             from bot.config import YOUTUBE_COOKIES_PATH
             yt_cand_opts = {
                 "format": "bestaudio/best",
-                "ffmpeg_location": ffmpeg_exe,
                 "outtmpl": str(DOWNLOADS_DIR / f"raw_spot_{track_id}_yt_%(id)s.%(ext)s"),
                 "quiet": True,
                 "no_warnings": True,

@@ -4,7 +4,6 @@ import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import (
@@ -93,13 +92,10 @@ def _prepare_youtube_cookie_file() -> str | None:
 
 def _download_youtube_sync(url: str) -> YouTubeVideo:
     """Synchronously download YouTube video or Shorts using yt-dlp with smart fallback."""
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-
     def build_ydl_opts(cookie_path: str | None) -> dict:
         opts = {
             "format": "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best",
             "merge_output_format": "mp4",
-            "ffmpeg_location": ffmpeg_exe,
             "outtmpl": str(DOWNLOADS_DIR / "yt_%(id)s.%(ext)s"),
             "quiet": True,
             "no_warnings": True,

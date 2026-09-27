@@ -2,7 +2,6 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import DOWNLOADS_DIR
@@ -22,12 +21,9 @@ class TwitterVideo:
 
 def _download_twitter_sync(url: str) -> TwitterVideo:
     """Download Twitter / X video synchronously via yt-dlp."""
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-
     ydl_opts = {
         "format": "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
-        "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / "tw_%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,

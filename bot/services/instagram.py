@@ -3,7 +3,6 @@ import logging
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-import imageio_ffmpeg
 import yt_dlp
 from yt_dlp.extractor.instagram import InstagramIE
 
@@ -127,11 +126,9 @@ def build_ydl_opts() -> dict:
 
 def _download_instagram_sync(url: str) -> InstagramMedia:
     """Download Instagram video(s), photo(s), or carousel posts via yt-dlp."""
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     clean_url = resolve_instagram_url(url)
 
     ydl_opts = build_ydl_opts()
-    ydl_opts["ffmpeg_location"] = ffmpeg_exe
     ydl_opts["noplaylist"] = False
 
     try:

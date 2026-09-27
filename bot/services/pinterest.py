@@ -6,7 +6,6 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import DOWNLOADS_DIR
@@ -226,11 +225,9 @@ def _download_pinterest_sync(url: str) -> PinterestMedia:
         logger.info("Pinterest oEmbed method failed: %s", oe_err)
 
     # 3. Tertiary Method: Attempt download using yt-dlp
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     ydl_opts = {
         "format": "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
-        "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / "pin_%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
