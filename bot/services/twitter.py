@@ -25,7 +25,8 @@ def _download_twitter_sync(url: str) -> TwitterVideo:
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
     ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
         "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / "tw_%(id)s.%(ext)s"),
         "quiet": True,

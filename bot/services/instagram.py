@@ -114,7 +114,8 @@ def resolve_instagram_url(url: str) -> str:
 def build_ydl_opts() -> dict:
     cookie_path = DOWNLOADS_DIR.parent / "cookies.txt"
     return {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo+bestaudio/best',
+        'merge_output_format': 'mp4',
         'outtmpl': str(DOWNLOADS_DIR / 'ig_%(id)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
@@ -160,7 +161,8 @@ def _download_instagram_sync(url: str) -> InstagramMedia:
                 if has_video:
                     # Download video with yt-dlp
                     v_opts = dict(ydl_opts)
-                    v_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+                    v_opts["format"] = "bestvideo+bestaudio/best"
+                    v_opts["merge_output_format"] = "mp4"
                     v_opts["outtmpl"] = str(DOWNLOADS_DIR / f"ig_{entry_id}.%(ext)s")
 
                     with yt_dlp.YoutubeDL(v_opts) as v_ydl:

@@ -228,7 +228,8 @@ def _download_pinterest_sync(url: str) -> PinterestMedia:
     # 3. Tertiary Method: Attempt download using yt-dlp
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     ydl_opts = {
-        "format": "best[ext=mp4]/best",
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
         "ffmpeg_location": ffmpeg_exe,
         "outtmpl": str(DOWNLOADS_DIR / "pin_%(id)s.%(ext)s"),
         "quiet": True,
