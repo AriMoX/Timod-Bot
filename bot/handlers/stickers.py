@@ -3,8 +3,6 @@ import time
 import asyncio
 from pathlib import Path
 from PIL import Image
-import imageio_ffmpeg
-
 from aiogram import Router, F
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -141,7 +139,7 @@ async def do_make_sticker(message: Message, bot, data: dict, emoji: str):
             
         else:
             # --- CONVERT VIDEO TO WEBM VP9 ---
-            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg_exe = 'ffmpeg'
             cmd = [
                 ffmpeg_exe, "-y",
                 "-i", str(in_path),

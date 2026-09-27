@@ -17,7 +17,6 @@ from aiogram.types import (
     FSInputFile,
 )
 from aiogram.enums import ChatAction
-import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import DOWNLOADS_DIR, SERVER_PUBLIC_URL

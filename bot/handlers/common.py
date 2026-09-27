@@ -4,7 +4,6 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import Message, FSInputFile, CallbackQuery
 from aiogram.enums import ChatAction
-import imageio_ffmpeg
 import yt_dlp
 
 from bot.config import DOWNLOADS_DIR, ADMIN_ID
@@ -88,7 +87,7 @@ async def cmd_start_deep_link(message: Message, command: CommandObject):
 
     track_path = None
     try:
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg_exe = 'ffmpeg'
         ydl_opts = {
             "format": "bestaudio[ext=m4a]/bestaudio/best",
             "ffmpeg_location": ffmpeg_exe,
